@@ -1,11 +1,62 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
   <component name="ChangeListManager">
-    <list default="true" id="847e4fbc-3a19-4a80-8075-980998483117" name="更改" comment="" />
+    <list default="true" id="847e4fbc-3a19-4a80-8075-980998483117" name="更改" comment="">
+      <change afterPath="$PROJECT_DIR$/.idea/FlowerGame.iml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/MarsCodeWorkspaceAppSettings.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/Project_Default.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/Packet.dll" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/easytier-cli.exe" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/easytier-core.exe" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/download.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/drop.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/empty.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/fluid.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/good.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/hysh.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/laggy.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/paidaxin.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/settings.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/icons/upload.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/logo.ico" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/logo.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/syncthing.exe" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/resources/wintun.dll" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/cache/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/easytier/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/logs/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/minecraft/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/minecraft/download/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/minecraft/login/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/minecraft/online_lobby/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/minecraft/online_lobby/game/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/minecraft/online_lobby/room/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/service/syncthing/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ui/main_window.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/utils/httpx.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/utils/thread_pool.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -14,19 +65,36 @@
   "associatedIndex": 5
 }]]></component>
   <component name="ProjectId" id="36B9P0VoGe3m8ut0c3I8shWKblZ" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "ModuleVcsDetector.initialDetectionPerformed": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "git-widget-placeholder": "master",
+    "last_opened_file_path": "C:/2025/11/FlowerGame/resources",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
+    "ts.external.directory.path": "C:\\Program Files\\JetBrains\\PyCharm 2025.1.1.1\\plugins\\javascript-plugin\\jsLanguageServicesImpl\\external",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\2025\11\FlowerGame\resources" />
+    </key>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -42,7 +110,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1764469070200</updated>
-      <workItem from="1764469071128" duration="1000" />
+      <workItem from="1764469071128" duration="8204000" />
     </task>
     <servers />
   </component>

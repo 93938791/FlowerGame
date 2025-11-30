@@ -1,0 +1,12 @@
+httpx[http2]
+requests
+python-dotenv
+pydantic
+pydantic-settings
+platformdirs
+pyyaml
+psutil
+fastapi
+uvicorn[standard]
+aiohttp
+pyinstaller

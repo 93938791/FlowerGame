@@ -165,6 +165,49 @@ def api_auth_authorize_url():
     url = _auth.get_authorization_url()
     return {"url": url}
 
+@app.get("/api/auth/device-code")
+def api_auth_device_code():
+    """获取设备代码（Device Code Flow）"""
+    ok, err, data = _auth.get_device_code()
+    return {"ok": ok, "error": err, "data": data}
+
+@app.post("/api/auth/device-auth")
+async def api_auth_device_auth(payload: Dict):
+    """使用设备代码认证（单次检查，不轮询）"""
+    device_code = payload.get("device_code", "")
+    if not device_code:
+        return {"ok": False, "error": "缺少device_code参数", "profile": None}
+    
+    # 单次检查，不轮询
+    ok, err = _auth.poll_device_token(device_code)
+    
+    if ok:
+        # 获取到了token，继续完成剩余流程
+        # 步骤2: 获取Xbox Live令牌
+        success, error = _auth.get_xbox_live_token()
+        if not success:
+            return {"ok": False, "error": error, "profile": None}
+        
+        # 步骤3: 获取XSTS令牌
+        success, error = _auth.get_xsts_token()
+        if not success:
+            return {"ok": False, "error": error, "profile": None}
+        
+        # 步骤4: 获取Minecraft令牌
+        success, error = _auth.get_minecraft_token()
+        if not success:
+            return {"ok": False, "error": error, "profile": None}
+        
+        # 步骤5: 获取Minecraft用户资料
+        success, error, profile = _auth.get_minecraft_profile()
+        if not success:
+            return {"ok": False, "error": error, "profile": None}
+        
+        return {"ok": True, "error": None, "profile": profile}
+    else:
+        # 返回错误（包括authorization_pending）
+        return {"ok": False, "error": err, "profile": None}
+
 @app.post("/api/auth/authenticate")
 def api_auth_authenticate(payload: Dict):
     code = payload.get("auth_code", "")
@@ -174,6 +217,36 @@ def api_auth_authenticate(payload: Dict):
 @app.get("/api/auth/status")
 def api_auth_status():
     return _auth.get_auth_info()
+
+@app.post("/api/auth/save-profile")
+def api_auth_save_profile(payload: Dict):
+    """保存正版账号信息到配置文件"""
+    profile = payload.get("profile")
+    if profile:
+        _auth.save_profile(profile)
+        return {"ok": True, "message": "账号信息已保存"}
+    return {"ok": False, "error": "缺少profile参数"}
+
+@app.post("/api/auth/save-offline")
+def api_auth_save_offline(payload: Dict):
+    """保存离线账号信息到配置文件"""
+    username = payload.get("username")
+    if username:
+        _auth.save_offline_account(username)
+        return {"ok": True, "message": "离线账号已保存"}
+    return {"ok": False, "error": "缺少username参数"}
+
+@app.post("/api/auth/clear-profile")
+def api_auth_clear_profile():
+    """清除正版账号信息"""
+    _auth.clear_profile()
+    return {"ok": True, "message": "账号信息已清除"}
+
+@app.post("/api/auth/clear-offline")
+def api_auth_clear_offline():
+    """清除离线账号信息"""
+    _auth.clear_offline_account()
+    return {"ok": True, "message": "离线账号已清除"}
 
 # Minecraft 下载 API
 @app.get("/api/minecraft/versions")

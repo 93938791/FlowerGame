@@ -167,6 +167,103 @@ class ConfigCache:
             config['selected_node'] = node
         cls.save(config)
         logger.info(f"已设置选中节点: {node}")
+    
+    @classmethod
+    def get_network_config(cls):
+        """
+        获取网络连接配置
+        
+        Returns:
+            dict: 网络配置，包含room_name和password
+        """
+        config = cls.load()
+        return config.get('network', {'room_name': '', 'password': ''})
+    
+    @classmethod
+    def save_network_config(cls, room_name, password):
+        """
+        保存网络连接配置
+        
+        Args:
+            room_name: 房间名称
+            password: 房间密码
+        """
+        config = cls.load()
+        config['network'] = {
+            'room_name': room_name,
+            'password': password
+        }
+        cls.save(config)
+        logger.info(f"已保存网络配置: {room_name}")
+    
+    @classmethod
+    def get_auth_info(cls):
+        """
+        获取认证信息
+        
+        Returns:
+            dict: 认证信息，包含profile和offline_account
+        """
+        config = cls.load()
+        return config.get('auth', {'profile': None, 'offline_account': None})
+    
+    @classmethod
+    def save_profile(cls, profile):
+        """
+        保存正版账号信息
+        
+        Args:
+            profile: 账号信息
+        """
+        config = cls.load()
+        # 添加皮肤URL缓存（使用 Visage 3D 渲染）
+        if profile and profile.get('id'):
+            uuid = profile['id']
+            profile['skin_url'] = f"https://visage.surgeplay.com/full/256/{uuid}"
+            profile['avatar_url'] = f"https://visage.surgeplay.com/avatar/64/{uuid}"
+        
+        config['auth'] = {
+            'profile': profile,
+            'offline_account': None
+        }
+        cls.save(config)
+        logger.info(f"已保存正版账号: {profile.get('name') if profile else 'None'}")
+    
+    @classmethod
+    def save_offline_account(cls, username):
+        """
+        保存离线账号信息
+        
+        Args:
+            username: 离线用户名
+        """
+        config = cls.load()
+        config['auth'] = {
+            'profile': None,
+            'offline_account': username
+        }
+        cls.save(config)
+        logger.info(f"已保存离线账号: {username}")
+    
+    @classmethod
+    def clear_profile(cls):
+        """清除正版账号信息"""
+        config = cls.load()
+        auth = config.get('auth', {})
+        auth['profile'] = None
+        config['auth'] = auth
+        cls.save(config)
+        logger.info("已清除正版账号")
+    
+    @classmethod
+    def clear_offline_account(cls):
+        """清除离线账号信息"""
+        config = cls.load()
+        auth = config.get('auth', {})
+        auth['offline_account'] = None
+        config['auth'] = auth
+        cls.save(config)
+        logger.info("已清除离线账号")
 
 class CacheManager:
     """通用缓存管理器"""

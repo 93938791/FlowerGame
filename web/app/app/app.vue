@@ -7,6 +7,70 @@
         <span class="toast-message">{{ toast.message }}</span>
       </div>
       
+      <!-- 设备代码登录弹窗 -->
+      <div v-if="deviceCodeData" class="modal-overlay device-code-modal" @click="cancelDeviceAuth">
+        <div class="modal-content device-code-content" @click.stop>
+          <div class="device-code-header">
+            <h3>🔐 Microsoft 登录</h3>
+            <button @click="cancelDeviceAuth" class="modal-close">×</button>
+          </div>
+          
+          <div class="device-code-body">
+            <!-- 登录说明 -->
+            <div class="login-instruction">
+              <div class="instruction-icon">ℹ️</div>
+              <div class="instruction-text">点击下方按钮将自动复制代码并打开登录页面</div>
+            </div>
+            
+            <!-- 代码显示 -->
+            <div class="code-display-large">
+              <div class="code-label">登录代码</div>
+              <div class="code-value-large">{{ deviceCodeData.user_code }}</div>
+            </div>
+            
+            <!-- 一键复制并打开按钮 -->
+            <div class="open-login-section">
+              <button @click="copyAndOpen" class="qq-btn qq-btn-success qq-btn-block qq-btn-large">
+                🚀 复制代码并打开登录页面
+              </button>
+              <div class="open-hint">代码会自动复制，在新窗口中直接粘贴即可</div>
+            </div>
+            
+            <!-- 等待状态 -->
+            <div class="auth-waiting">
+              <div class="waiting-spinner"></div>
+              <div class="waiting-text">{{ authProgress }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 离线登录弹窗 -->
+      <div v-if="showOfflineLogin" class="modal-overlay" @click="showOfflineLogin = false">
+        <div class="modal-content offline-login-modal" @click.stop>
+          <div class="device-code-header">
+            <h3>👤 离线登录</h3>
+            <button @click="showOfflineLogin = false" class="modal-close">×</button>
+          </div>
+          <div class="device-code-body">
+            <div class="login-instruction">
+              <div class="instruction-icon">ℹ️</div>
+              <div class="instruction-text">输入一个游戏名称（3-16个字符）</div>
+            </div>
+            <input 
+              v-model="offlineName" 
+              placeholder="输入游戏名称" 
+              class="qq-input qq-input-large"
+              maxlength="16"
+              @keyup.enter="confirmOfflineLogin"
+            />
+            <button @click="confirmOfflineLogin" class="qq-btn qq-btn-success qq-btn-block qq-btn-large" style="margin-top: 16px;">
+              ✅ 确认登录
+            </button>
+          </div>
+        </div>
+      </div>
+      
       <!-- 左侧导航栏 -->
       <div class="sidebar">
         <div class="sidebar-header">
@@ -28,10 +92,76 @@
           </div>
         </div>
         
+        <!-- 账号登录区域 -->
+        <div class="sidebar-account">
+          <!-- 登录状态显示 -->
+          <div v-if="accountInfo || offlineAccount" class="account-card">
+            <!-- 3D皮肤预览（正版和离线都显示） -->
+            <div class="skin-3d-preview">
+              <img 
+                v-if="accountInfo" 
+                :src="getSkinUrl(accountInfo.id, 'full', 256)" 
+                alt="3D皮肤" 
+                class="skin-3d" 
+              />
+              <img 
+                v-else-if="offlineAccount" 
+                :src="getOfflineSkinUrl('full', 256)" 
+                alt="默认皮肤" 
+                class="skin-3d" 
+              />
+            </div>
+            
+            <div class="account-info">
+              <div class="account-name">{{ accountInfo?.name || offlineAccount }}</div>
+              <div class="account-badge" :class="accountInfo ? 'premium' : 'offline'">
+                {{ accountInfo ? '✓ 正版' : '离线' }}
+              </div>
+            </div>
+            
+            <button @click="accountInfo ? logout() : logoutOffline()" class="logout-btn">
+              退出登录
+            </button>
+          </div>
+          
+          <!-- 登录按钮 -->
+          <div v-else class="login-buttons">
+            <button 
+              @click="startDeviceAuth" 
+              class="sidebar-login-btn microsoft"
+              :disabled="isAuthenticating || deviceCodeData !== null"
+            >
+              <span class="btn-icon">🔐</span>
+              <span class="btn-text">{{ isAuthenticating ? '请求中...' : '正版登录' }}</span>
+            </button>
+            <button @click="showOfflineLogin = true" class="sidebar-login-btn offline">
+              <span class="btn-icon">👤</span>
+              <span class="btn-text">离线登录</span>
+            </button>
+          </div>
+        </div>
+        
         <div class="sidebar-footer">
+          <!-- 登录状态 -->
           <div class="status-indicator">
-            <span class="status-dot online"></span>
-            <span class="status-text">在线</span>
+            <span class="status-dot" :class="{
+              'online': accountInfo || offlineAccount,
+              'offline': !accountInfo && !offlineAccount
+            }"></span>
+            <span class="status-text">
+              {{ accountInfo || offlineAccount ? '已登录' : '未登录' }}
+            </span>
+          </div>
+          
+          <!-- 网络连接状态 -->
+          <div class="status-indicator">
+            <span class="status-dot" :class="{
+              'online': networkStatus.connected,
+              'offline': !networkStatus.connected
+            }"></span>
+            <span class="status-text">
+              {{ networkStatus.connected ? '网络已连接' : '网络未连接' }}
+            </span>
           </div>
         </div>
       </div>
@@ -174,11 +304,19 @@
                     </div>
                   </div>
                   <div class="button-group">
-                    <button @click="connectNetwork" class="qq-btn qq-btn-primary" :disabled="networkStatus.connected">
-                      {{ networkStatus.connected ? '已连接' : '连接房间' }}
+                    <button 
+                      @click="connectNetwork" 
+                      class="qq-btn qq-btn-primary" 
+                      :disabled="networkStatus.connected || isConnecting"
+                    >
+                      {{ isConnecting ? '连接中...' : (networkStatus.connected ? '已连接' : '连接房间') }}
                     </button>
-                    <button @click="disconnectNetwork" class="qq-btn qq-btn-danger" :disabled="!networkStatus.connected">
-                      断开连接
+                    <button 
+                      @click="disconnectNetwork" 
+                      class="qq-btn qq-btn-danger" 
+                      :disabled="!networkStatus.connected || isDisconnecting"
+                    >
+                      {{ isDisconnecting ? '断开中...' : '断开连接' }}
                     </button>
                   </div>
                 </div>
@@ -238,45 +376,99 @@
 
           <!-- 游戏管理 -->
           <div v-show="activeMenu === 'game'" class="panel">
+            <!-- MC版本下载区域 -->
             <div class="panel-section">
-              <h3 class="section-title">Minecraft 版本下载</h3>
-              <div class="button-group">
-                <button @click="listVersions" class="qq-btn">获取版本清单</button>
-              </div>
-              <div class="input-group">
-                <input 
-                  v-model="versionId" 
-                  placeholder="输入版本号，如 1.21.1" 
-                  class="qq-input"
-                />
-                <input 
-                  v-model="customName" 
-                  placeholder="自定义名称（可选）" 
-                  class="qq-input"
-                />
-                <button @click="downloadVersion" class="qq-btn qq-btn-primary">下载原版</button>
-              </div>
-              <div v-if="dlOut" class="output-box">
-                <pre>{{ dlOut }}</pre>
+              <h3 class="section-title">📦 版本下载</h3>
+              
+              <div class="download-compact">
+                <!-- 版本类型选择 -->
+                <div class="version-type-tabs">
+                  <button 
+                    v-for="type in versionTypes" 
+                    :key="type.value"
+                    :class="['type-tab', { active: selectedVersionType === type.value }]"
+                    @click="selectVersionType(type.value)"
+                    :title="type.label"
+                  >
+                    {{ type.icon }}
+                  </button>
+                </div>
+                
+                <!-- 版本选择 -->
+                <div class="form-row-compact">
+                  <select v-model="versionId" class="qq-select qq-select-compact" @change="onVersionChange">
+                    <option value="">选择MC版本</option>
+                    <option v-for="ver in filteredVersions" :key="ver.id" :value="ver.id">
+                      {{ ver.id }}
+                    </option>
+                  </select>
+                  <button @click="loadVersions" class="qq-btn qq-btn-icon" :disabled="loadingVersions" title="刷新">
+                    🔄
+                  </button>
+                </div>
+                
+                <!-- 加载器选择 -->
+                <div class="form-row-compact" v-if="selectedVersionType !== 'vanilla'">
+                  <select v-model="loaderVersion" class="qq-select qq-select-compact">
+                    <option value="">加载器版本</option>
+                    <option v-for="lv in loaderVersions" :key="lv" :value="lv">{{ lv }}</option>
+                  </select>
+                </div>
+                
+                <!-- 自定义名称 -->
+                <div class="form-row-compact">
+                  <input 
+                    v-model="customName" 
+                    placeholder="自定义名称（可选）" 
+                    class="qq-input qq-input-compact"
+                  />
+                </div>
+                
+                <!-- 下载按钮 -->
+                <button 
+                  @click="startDownload" 
+                  class="qq-btn qq-btn-primary qq-btn-block"
+                  :disabled="!canDownload || isDownloading"
+                >
+                  {{ isDownloading ? '⏳ 下载中...' : '⬇️ 开始下载' }}
+                </button>
               </div>
             </div>
             
-            <div class="panel-section">
-              <h3 class="section-title">Microsoft 账户登录</h3>
-              <div class="button-group">
-                <button @click="authorize" class="qq-btn qq-btn-primary">获取授权</button>
-                <button @click="authStatus" class="qq-btn">查看状态</button>
+            <!-- 下载进度区 -->
+            <div v-if="downloadTasks.length > 0" class="panel-section">
+              <h3 class="section-title">📊 下载进度</h3>
+              <div class="progress-grid">
+                <div 
+                  v-for="task in downloadTasks" 
+                  :key="task.id"
+                  class="progress-card"
+                >
+                  <div class="progress-header-compact">
+                    <span class="progress-name-compact">{{ task.name }}</span>
+                    <span class="progress-percentage">{{ task.progress }}%</span>
+                  </div>
+                  <div class="progress-bar progress-bar-compact">
+                    <div 
+                      class="progress-bar-fill" 
+                      :style="{ width: task.progress + '%' }"
+                      :class="{ 
+                        'progress-success': task.status === 'completed',
+                        'progress-error': task.status === 'failed',
+                        'progress-active': task.status === 'downloading'
+                      }"
+                    ></div>
+                  </div>
+                  <div class="progress-status-compact">{{ task.statusText }}</div>
+                </div>
               </div>
-              <div class="input-group">
-                <input 
-                  v-model="authCode" 
-                  placeholder="粘贴授权 code" 
-                  class="qq-input"
-                />
-                <button @click="authenticate" class="qq-btn qq-btn-success">提交认证</button>
-              </div>
-              <div v-if="authOut" class="output-box">
-                <pre>{{ authOut }}</pre>
+            </div>
+            
+            <!-- 输出日志 -->
+            <div v-if="dlOut || authOut" class="panel-section">
+              <h3 class="section-title">📝 日志输出</h3>
+              <div class="output-box output-box-compact">
+                <pre>{{ dlOut || authOut }}</pre>
               </div>
             </div>
           </div>
@@ -365,6 +557,9 @@ const trafficStats = ref({
   rx_speed: 0
 })
 
+const isConnecting = ref(false) // 连接中状态
+const isDisconnecting = ref(false) // 断开中状态
+
 let statusTimer: number | null = null
 let trafficTimer: number | null = null
 let ws: WebSocket | null = null
@@ -443,8 +638,11 @@ function connectWebSocket() {
 // 断开 WebSocket
 function disconnectWebSocket() {
   if (ws) {
+    // 设置一个标志，防止 onclose 事件中的重连逻辑
+    ws.onclose = null
     ws.close()
     ws = null
+    console.log('WebSocket 已主动断开')
   }
 }
 
@@ -602,7 +800,15 @@ async function loadDefaultConfig() {
 
 // 连接网络
 async function connectNetwork() {
+  // 防止重复点击
+  if (isConnecting.value) {
+    showToast('正在连接中，请稍候...', 'info')
+    return
+  }
+  
   try {
+    isConnecting.value = true
+    
     // 检查是否选择了节点
     if (!selectedNode.value) {
       showToast('请先选择一个节点！', 'error')
@@ -641,20 +847,36 @@ async function connectNetwork() {
     }
   } catch (e) {
     showToast(`连接失败: ${e}`, 'error')
+  } finally {
+    isConnecting.value = false
   }
 }
 
 // 断开连接
 async function disconnectNetwork() {
+  // 防止重复点击
+  if (isDisconnecting.value) {
+    showToast('正在断开中，请稍候...', 'info')
+    return
+  }
+  
   try {
+    isDisconnecting.value = true
+    
     const r = await fetch('/api/easytier/stop', { method: 'POST' })
     const result = await r.json()
     
     if (result.ok) {
-      showToast('已断开连接', 'success')
+      // 立即更新状态
+      networkStatus.value = {
+        running: false,
+        connected: false,
+        virtual_ip: '未连接'
+      }
+      
       // 断开 WebSocket
       disconnectWebSocket()
-      await updateNetworkStatus()
+      // 清空数据
       peers.value = []
       trafficStats.value = {
         tx_bytes: 0,
@@ -662,9 +884,16 @@ async function disconnectNetwork() {
         tx_speed: 0,
         rx_speed: 0
       }
+      
+      // 所有操作完成后再显示提示
+      showToast('已断开连接', 'success')
+    } else {
+      showToast(`断开失败: ${result.error || '未知错误'}`, 'error')
     }
   } catch (e) {
     showToast(`断开失败: ${e}`, 'error')
+  } finally {
+    isDisconnecting.value = false
   }
 }
 
@@ -822,27 +1051,539 @@ const dlOut = ref('')
 const synOut = ref('')
 const etOut = ref('')
 
+// 登录相关状态
+const loginType = ref<'microsoft' | 'offline'>('microsoft')
+const accountInfo = ref<any>(null)
+const offlineAccount = ref<string | null>(null)
+const offlineName = ref('')
+const deviceCodeData = ref<any>(null)
+const authProgress = ref('等待授权...')
+const isAuthenticating = ref(false)
+const showOfflineLogin = ref(false)
+let pollTimer: number | null = null // 轮询定时器
+
+// 皮肤API配置 - 使用 Visage（支持3D渲染，国内有CDN）
+const SKIN_API_BASE = 'https://visage.surgeplay.com'
+
+// 生成皮肤URL的函数（优先使用缓存）
+function getSkinUrl(uuid: string, type: 'avatar' | 'bust' | 'full' = 'full', size: number = 256) {
+  if (!uuid) return ''
+  
+  // 如果accountInfo中有缓存的URL，优先使用
+  if (type === 'full' && accountInfo.value?.skin_url) {
+    return accountInfo.value.skin_url
+  }
+  if (type === 'avatar' && accountInfo.value?.avatar_url) {
+    return accountInfo.value.avatar_url
+  }
+  
+  // visage.surgeplay.com 支持: 
+  // /avatar/{size}/{uuid} - 头像
+  // /bust/{size}/{uuid} - 半身像  
+  // /full/{size}/{uuid} - 3D全身像
+  return `${SKIN_API_BASE}/${type}/${size}/${uuid}`
+}
+
+// 离线账号使用默认 Steve 皮肤
+function getOfflineSkinUrl(type: 'avatar' | 'bust' | 'full' = 'full', size: number = 256) {
+  // 使用 Minecraft 默认 Steve 皮肤的 UUID
+  const steveSkinUuid = 'c06f89064c8a49119c29ea1dbd1aab82' // Steve 默认皮肤
+  return `${SKIN_API_BASE}/${type}/${size}/${steveSkinUuid}`
+}
+
+// 页面加载时恢复登录状态
+onMounted(() => {
+  loadCachedLoginInfo()
+})
+
+// 从后端加载登录信息
+async function loadCachedLoginInfo() {
+  try {
+    // 从后端获取缓存的登录信息
+    const r = await fetch('/api/auth/status')
+    const result = await r.json()
+    
+    if (result.ok && result.profile) {
+      accountInfo.value = result.profile
+      console.log('已从后端恢复正版账号:', result.profile.name)
+    } else if (result.offline_account) {
+      offlineAccount.value = result.offline_account
+      console.log('已从后端恢复离线账号:', result.offline_account)
+    }
+  } catch (e) {
+    console.error('从后端恢复登录信息失败:', e)
+  }
+}
+
+// 保存登录信息到后端
+async function saveAccountToCache(account: any) {
+  try {
+    await fetch('/api/auth/save-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: account })
+    })
+    console.log('已保存正版账号到后端:', account.name)
+  } catch (e) {
+    console.error('保存账号信息到后端失败:', e)
+  }
+}
+
+async function saveOfflineToCache(username: string) {
+  try {
+    await fetch('/api/auth/save-offline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username })
+    })
+    console.log('已保存离线账号到后端:', username)
+  } catch (e) {
+    console.error('保存离线账号到后端失败:', e)
+  }
+}
+
+// 清除缓存
+async function clearAccountCache() {
+  try {
+    await fetch('/api/auth/clear-profile', { method: 'POST' })
+  } catch (e) {
+    console.error('清除账号缓存失败:', e)
+  }
+}
+
+async function clearOfflineCache() {
+  try {
+    await fetch('/api/auth/clear-offline', { method: 'POST' })
+  } catch (e) {
+    console.error('清除离线账号缓存失败:', e)
+  }
+}
+
+// 版本下载相关
+const versionTypes = [
+  { label: '原版', value: 'vanilla', icon: '🎯' },
+  { label: 'Fabric', value: 'fabric', icon: '📦' },
+  { label: 'Forge', value: 'forge', icon: '🔧' },
+  { label: 'NeoForge', value: 'neoforge', icon: '🌟' },
+  { label: 'OptiFine', value: 'optifine', icon: '👍' }
+]
+const selectedVersionType = ref('vanilla')
+const loaderType = ref('fabric')
+const loaderVersion = ref('')
+const loaderVersions = ref<string[]>([])
+const mcVersions = ref<any[]>([])
+const filteredVersions = computed(() => mcVersions.value)
+const loadingVersions = ref(false)
+const isDownloading = ref(false)
+const downloadTasks = ref<any[]>([])
+const canDownload = computed(() => {
+  if (selectedVersionType.value === 'vanilla') {
+    return versionId.value.length > 0
+  }
+  return versionId.value.length > 0 && loaderVersion.value.length > 0
+})
+
 async function authorize() {
   const r = await fetch('/api/auth/authorize-url')
   const j = await r.json()
   authOut.value = JSON.stringify(j, null, 2)
   if (j.url) window.open(j.url, '_blank')
 }
+
 async function authenticate() {
-  const r = await fetch('/api/auth/authenticate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ auth_code: authCode.value.trim() }) })
-  authOut.value = JSON.stringify(await r.json(), null, 2)
+  let code = authCode.value.trim()
+  
+  // 如果用户粘贴的是完整URL，提取code参数
+  if (code.includes('?code=') || code.includes('&code=')) {
+    try {
+      const url = new URL(code)
+      const extractedCode = url.searchParams.get('code')
+      if (extractedCode) {
+        code = extractedCode
+        authCode.value = code // 更新输入框显示提取后的code
+        showToast('已从 URL 中提取 code 参数', 'info')
+      }
+    } catch (e) {
+      // 如果不是合法URL，尝试用正则提取
+      const match = code.match(/[?&]code=([^&]+)/)
+      if (match && match[1]) {
+        code = match[1]
+        authCode.value = code
+        showToast('已从 URL 中提取 code 参数', 'info')
+      }
+    }
+  }
+  
+  if (!code) {
+    showToast('请输入授权代码或URL', 'error')
+    return
+  }
+  
+  try {
+    const r = await fetch('/api/auth/authenticate', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ auth_code: code }) 
+    })
+    const result = await r.json()
+    authOut.value = JSON.stringify(result, null, 2)
+    
+    if (result.ok && result.profile) {
+      accountInfo.value = result.profile
+      saveAccountToCache(result.profile) // 保存到缓存
+      authCode.value = '' // 清空输入框
+      showToast(`欢迎 ${result.profile.name}! 登录成功`, 'success')
+    } else if (result.error) {
+      showToast(`登录失败: ${result.error}`, 'error')
+    } else {
+      showToast('登录失败，请重试', 'error')
+    }
+  } catch (e: any) {
+    showToast(`请求失败: ${e.message}`, 'error')
+  }
 }
+
 async function authStatus() {
   const r = await fetch('/api/auth/status')
-  authOut.value = JSON.stringify(await r.json(), null, 2)
+  const result = await r.json()
+  authOut.value = JSON.stringify(result, null, 2)
+  if (result.profile) {
+    accountInfo.value = result.profile
+  }
 }
+
+function logout() {
+  accountInfo.value = null
+  authOut.value = ''
+  authCode.value = ''
+  clearAccountCache() // 清除缓存
+  showToast('已退出登录', 'info')
+}
+
+function loginOffline() {
+  if (offlineName.value.length < 3 || offlineName.value.length > 16) {
+    showToast('游戏名称长度必须在3-16个字符之间', 'error')
+    return
+  }
+  offlineAccount.value = offlineName.value
+  offlineName.value = ''
+  showToast('离线登录成功', 'success')
+}
+
+function confirmOfflineLogin() {
+  if (offlineName.value.length < 3 || offlineName.value.length > 16) {
+    showToast('游戏名称长度必须在3-16个字符之间', 'error')
+    return
+  }
+  offlineAccount.value = offlineName.value
+  saveOfflineToCache(offlineName.value) // 保存到缓存
+  offlineName.value = ''
+  showOfflineLogin.value = false
+  showToast(`欢迎 ${offlineAccount.value}! 离线登录成功`, 'success')
+}
+
+function logoutOffline() {
+  offlineAccount.value = null
+  clearOfflineCache() // 清除缓存
+  showToast('已退出登录', 'info')
+}
+
+// 设备代码登录方法
+async function startDeviceAuth() {
+  // 防止重复请求
+  if (isAuthenticating.value || deviceCodeData.value) {
+    showToast('登录请求正在进行中，请勿重复点击', 'info')
+    return
+  }
+  
+  isAuthenticating.value = true
+  authProgress.value = '正在获取设备代码...'
+  
+  try {
+    const r = await fetch('/api/auth/device-code')
+    const result = await r.json()
+    
+    if (!result.ok || !result.data) {
+      showToast(`获取设备代码失败: ${result.error || '未知错误'}`, 'error')
+      isAuthenticating.value = false
+      return
+    }
+    
+    deviceCodeData.value = result.data
+    isAuthenticating.value = false
+    authProgress.value = '请点击按钮打开登录页面...'
+    
+    // 自动复制代码到剪贴板
+    copyCodeToClipboard(deviceCodeData.value.user_code)
+    
+    // 不自动打开浏览器，让用户手动点击
+    // window.open(deviceCodeData.value.verification_uri, '_blank')
+    
+    // 开始轮询
+    pollDeviceAuth()
+  } catch (e: any) {
+    showToast(`请求失败: ${e.message}`, 'error')
+    isAuthenticating.value = false
+  }
+}
+
+function copyCodeToClipboard(code: string) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code)
+      .then(() => {
+        console.log('代码已复制到剪贴板:', code)
+      })
+      .catch(err => {
+        console.error('复制失败:', err)
+        // Fallback
+        fallbackCopyCode(code)
+      })
+  } else {
+    // Fallback for older browsers
+    fallbackCopyCode(code)
+  }
+}
+
+function fallbackCopyCode(code: string) {
+  const textarea = document.createElement('textarea')
+  textarea.value = code
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    document.execCommand('copy')
+    console.log('代码已复制到剪贴板 (fallback):', code)
+  } catch (err) {
+    console.error('复制失败 (fallback):', err)
+  }
+  document.body.removeChild(textarea)
+}
+
+async function pollDeviceAuth() {
+  if (!deviceCodeData.value) return
+  
+  authProgress.value = '等待用户授权...'
+  
+  // 清除之前的定时器
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+  
+  // 开始定时轮询（每5秒一次）
+  pollTimer = window.setInterval(async () => {
+    if (!deviceCodeData.value) {
+      if (pollTimer) {
+        clearInterval(pollTimer)
+        pollTimer = null
+      }
+      return
+    }
+    
+    try {
+      const r = await fetch('/api/auth/device-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_code: deviceCodeData.value.device_code })
+      })
+      const result = await r.json()
+      
+      if (result.ok && result.profile) {
+        // 登录成功
+        accountInfo.value = result.profile
+        saveAccountToCache(result.profile) // 保存到缓存
+        deviceCodeData.value = null
+        isAuthenticating.value = false // 重置认证状态
+        if (pollTimer) {
+          clearInterval(pollTimer)
+          pollTimer = null
+        }
+        showToast(`欢迎 ${result.profile.name}! 登录成功`, 'success')
+      } else if (result.error && result.error !== 'authorization_pending') {
+        // 其他错误（非authorization_pending）
+        // 检查是否已经登录成功，避免显示误导性错误
+        if (!accountInfo.value) {
+          showToast(`登录失败: ${result.error}`, 'error')
+        }
+        deviceCodeData.value = null
+        isAuthenticating.value = false
+        if (pollTimer) {
+          clearInterval(pollTimer)
+          pollTimer = null
+        }
+      }
+      // 如果是 authorization_pending，继续轮询
+    } catch (e: any) {
+      console.error('轮询错误:', e)
+    }
+  }, 5000) // 每5秒轮询一次
+}
+
+function cancelDeviceAuth() {
+  // 清除轮询定时器
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+  deviceCodeData.value = null
+  isAuthenticating.value = false
+  showToast('已取消登录', 'info')
+}
+
+function openUrl(url: string) {
+  window.open(url, '_blank')
+  // 打开后更新状态
+  if (authProgress.value === '请点击按钮打开登录页面...') {
+    authProgress.value = '等待用户在浏览器中完成授权...'
+  }
+}
+
+function copyAndOpen() {
+  if (!deviceCodeData.value) return
+  
+  // 先复制代码
+  copyCodeToClipboard(deviceCodeData.value.user_code)
+  
+  // 稍微延迟后打开窗口，确保复制成功
+  setTimeout(() => {
+    window.open(deviceCodeData.value.verification_uri, '_blank')
+    authProgress.value = '等待用户在浏览器中完成授权...'
+  }, 100)
+}
+
+function copyCode(code: string) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(code)
+    showToast('代码已复制到剪贴板', 'success')
+  } else {
+    // Fallback
+    const textarea = document.createElement('textarea')
+    textarea.value = code
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+    showToast('代码已复制到剪贴板', 'success')
+  }
+}
+
+async function loadVersions() {
+  loadingVersions.value = true
+  try {
+    const r = await fetch('/api/minecraft/versions')
+    mcVersions.value = await r.json()
+    showToast(`已加载 ${mcVersions.value.length} 个版本`, 'success')
+  } catch (e: any) {
+    showToast(`加载失败: ${e.message}`, 'error')
+  } finally {
+    loadingVersions.value = false
+  }
+}
+
+function selectVersionType(type: string) {
+  selectedVersionType.value = type
+  loaderVersion.value = ''
+  loaderVersions.value = []
+  if (type !== 'vanilla') {
+    loaderType.value = type
+  }
+}
+
+function onVersionChange() {
+  if (selectedVersionType.value !== 'vanilla' && versionId.value) {
+    loadLoaderVersions()
+  }
+}
+
+function onLoaderChange() {
+  loaderVersion.value = ''
+  loaderVersions.value = []
+  if (versionId.value) {
+    loadLoaderVersions()
+  }
+}
+
+async function loadLoaderVersions() {
+  loaderVersions.value = ['0.15.11', '0.15.10', '0.15.9', '0.15.7']
+}
+
+async function startDownload() {
+  isDownloading.value = true
+  dlOut.value = ''
+  
+  downloadTasks.value = [
+    { id: 'version_info', name: '📄 版本信息', progress: 0, status: 'pending', statusText: '等待中...' },
+    { id: 'client_jar', name: '🎮 JAR', progress: 0, status: 'pending', statusText: '等待中...' },
+    { id: 'libraries', name: '📦 依赖库', progress: 0, status: 'pending', statusText: '等待中...' },
+    { id: 'assets', name: '🎨 资源', progress: 0, status: 'pending', statusText: '等待中...' }
+  ]
+  
+  try {
+    if (selectedVersionType.value === 'vanilla') {
+      const r = await fetch('/api/minecraft/download', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ 
+          version_id: versionId.value.trim(), 
+          custom_name: customName.value.trim() || null 
+        }) 
+      })
+      const result = await r.json()
+      dlOut.value = JSON.stringify(result, null, 2)
+      await simulateProgress()
+    } else {
+      const r = await fetch('/api/minecraft/download-with-loader', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ 
+          mc_version: versionId.value.trim(),
+          loader_type: loaderType.value,
+          loader_version: loaderVersion.value,
+          custom_name: customName.value.trim() || null
+        }) 
+      })
+      const result = await r.json()
+      dlOut.value = JSON.stringify(result, null, 2)
+      await simulateProgress()
+    }
+    showToast('下载完成', 'success')
+  } catch (e: any) {
+    dlOut.value = `下载失败: ${e.message}`
+    showToast(`下载失败: ${e.message}`, 'error')
+    downloadTasks.value.forEach(task => {
+      if (task.status === 'downloading') {
+        task.status = 'failed'
+        task.statusText = '下载失败'
+      }
+    })
+  } finally {
+    isDownloading.value = false
+  }
+}
+
+async function simulateProgress() {
+  for (const task of downloadTasks.value) {
+    task.status = 'downloading'
+    task.statusText = '下载中...'
+    
+    for (let i = 0; i <= 100; i += 10) {
+      await new Promise(resolve => setTimeout(resolve, 150))
+      task.progress = i
+      if (i === 100) {
+        task.status = 'completed'
+        task.statusText = '✓ 完成'
+      }
+    }
+  }
+}
+
 async function listVersions() {
-  const r = await fetch('/api/minecraft/versions')
-  dlOut.value = JSON.stringify(await r.json(), null, 2)
+  await loadVersions()
 }
+
 async function downloadVersion() {
-  const r = await fetch('/api/minecraft/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: versionId.value.trim(), custom_name: customName.value.trim() || null }) })
-  dlOut.value = JSON.stringify(await r.json(), null, 2)
+  await startDownload()
 }
 async function synStart() {
   const r = await fetch('/api/syncthing/start', { method: 'POST' })
@@ -927,18 +1668,21 @@ body {
 }
 
 .toast.success {
-  background: #52c41a;
+  background: linear-gradient(135deg, #a8e063 0%, #56ab2f 100%);
   color: white;
+  box-shadow: 0 4px 12px rgba(168, 224, 99, 0.5);
 }
 
 .toast.error {
-  background: #ff4d4f;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
   color: white;
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.5);
 }
 
 .toast.info {
-  background: #1890ff;
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
   color: white;
+  box-shadow: 0 4px 12px rgba(0, 217, 255, 0.5);
 }
 
 .toast-icon {
@@ -950,13 +1694,13 @@ body {
   flex: 1;
 }
 
-/* 侧边栏样式 */
+/* 侧边栏样式 - 游戏风格渐变 */
 .sidebar {
   width: 240px;
-  background: linear-gradient(180deg, #4a90e2 0%, #357abd 100%);
+  background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
   display: flex;
   flex-direction: column;
-  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.2);
 }
 
 .sidebar-header {
@@ -1018,8 +1762,9 @@ body {
   transform: translateY(-50%);
   width: 4px;
   height: 24px;
-  background: white;
+  background: linear-gradient(180deg, #00d9ff 0%, #00b8d4 100%);
   border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.8);
 }
 
 .menu-icon {
@@ -1031,8 +1776,176 @@ body {
 }
 
 .sidebar-footer {
-  padding: 16px 20px;
+  padding: 12px 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 侧边栏账号区域 */
+.sidebar-account {
+  padding: 12px;
+  margin-top: auto;
+}
+
+.account-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 16px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  transition: all 0.3s ease;
+}
+
+.account-card:hover {
+  background: rgba(255, 255, 255, 0.12);
+  transform: translateY(-2px);
+}
+
+/* 3D皮肤预览 - 简洁无边框设计 */
+.skin-3d-preview {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.skin-3d {
+  width: 100%;
+  height: auto;
+  max-width: 180px;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.4));
+  transition: all 0.3s ease;
+}
+
+.skin-3d:hover {
+  transform: scale(1.08) translateY(-4px);
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.5));
+}
+
+/* 账号信息 */
+.account-info {
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.account-badge {
+  display: inline-block;
+  align-self: center;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 12px;
+}
+
+.account-badge.premium {
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 217, 255, 0.5);
+  font-weight: 700;
+}
+
+.account-badge.offline {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+/* 退出按钮 */
+.logout-btn {
+  width: 100%;
+  padding: 8px 16px;
+  background: rgba(244, 67, 54, 0.2);
+  color: white;
+  border: 1px solid rgba(244, 67, 54, 0.4);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.logout-btn:hover {
+  background: rgba(244, 67, 54, 0.4);
+  border-color: rgba(244, 67, 54, 0.6);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(244, 67, 54, 0.3);
+}
+
+.login-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.sidebar-login-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+.sidebar-login-btn.microsoft {
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 217, 255, 0.3);
+  font-weight: 700;
+}
+
+.sidebar-login-btn.microsoft:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 217, 255, 0.6);
+}
+
+.sidebar-login-btn.offline {
+  background: linear-gradient(135deg, #a8e063 0%, #56ab2f 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(168, 224, 99, 0.3);
+  font-weight: 600;
+}
+
+.sidebar-login-btn.offline:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(168, 224, 99, 0.6);
+}
+
+.sidebar-login-btn .btn-icon {
+  font-size: 16px;
+}
+
+.sidebar-login-btn .btn-text {
+  font-size: 13px;
 }
 
 .status-indicator {
@@ -1040,20 +1953,40 @@ body {
   align-items: center;
   gap: 8px;
   color: white;
-  font-size: 14px;
+  font-size: 12px;
+  padding: 4px 0;
 }
 
-.status-dot {
+/* 状态指示灯 - 在线状态（绿色呼吸灯） */
+.status-dot.online {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #4caf50;
+  background: linear-gradient(135deg, #a8e063 0%, #56ab2f 100%);
   animation: pulse 2s infinite;
+  box-shadow: 0 0 8px rgba(168, 224, 99, 0.8);
 }
 
+/* 状态指示灯 - 离线状态（灰色呼吸灯） */
+.status-dot.offline {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
+  animation: pulse 2s infinite;
+  box-shadow: 0 0 8px rgba(149, 165, 166, 0.6);
+}
+
+/* 呼吸灯动画 */
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%, 100% { 
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 0.5;
+    transform: scale(0.95);
+  }
 }
 
 /* 内容区域样式 */
@@ -1126,7 +2059,7 @@ body {
   color: #333;
   margin: 0 0 20px 0;
   padding-bottom: 12px;
-  border-bottom: 2px solid #4a90e2;
+  border-bottom: 2px solid #00d9ff;
 }
 
 .section-header {
@@ -1174,36 +2107,43 @@ body {
 }
 
 .qq-btn-primary {
-  background: #4a90e2;
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
   color: white;
-  border-color: #4a90e2;
+  border: none;
+  box-shadow: 0 2px 8px rgba(0, 217, 255, 0.3);
+  font-weight: 600;
 }
 
 .qq-btn-primary:hover {
-  background: #357abd;
-  border-color: #357abd;
+  background: linear-gradient(135deg, #00c4ea 0%, #00a3bf 100%);
+  box-shadow: 0 4px 12px rgba(0, 217, 255, 0.5);
+  transform: translateY(-1px);
 }
 
 .qq-btn-danger {
-  background: #f56c6c;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
   color: white;
-  border-color: #f56c6c;
+  border: none;
+  box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);
 }
 
 .qq-btn-danger:hover {
-  background: #f34d4d;
-  border-color: #f34d4d;
+  background: linear-gradient(135deg, #ff5555 0%, #dd4a5a 100%);
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.5);
+  transform: translateY(-1px);
 }
 
 .qq-btn-success {
-  background: #67c23a;
+  background: linear-gradient(135deg, #a8e063 0%, #56ab2f 100%);
   color: white;
-  border-color: #67c23a;
+  border: none;
+  box-shadow: 0 2px 8px rgba(168, 224, 99, 0.3);
 }
 
 .qq-btn-success:hover {
-  background: #5daf34;
-  border-color: #5daf34;
+  background: linear-gradient(135deg, #95d450 0%, #4a9625 100%);
+  box-shadow: 0 4px 12px rgba(168, 224, 99, 0.5);
+  transform: translateY(-1px);
 }
 
 .qq-btn:disabled {
@@ -1239,8 +2179,8 @@ body {
 }
 
 .qq-input:focus {
-  border-color: #4a90e2;
-  box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.1);
+  border-color: #00d9ff;
+  box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.15);
 }
 
 .qq-input::placeholder {
@@ -1270,8 +2210,8 @@ body {
 
 .qq-input-enhanced:focus {
   background: #fff;
-  border-color: #4a90e2;
-  box-shadow: 0 0 0 4px rgba(74, 144, 226, 0.12);
+  border-color: #00d9ff;
+  box-shadow: 0 0 0 4px rgba(0, 217, 255, 0.15);
   transform: translateY(-1px);
 }
 
@@ -1293,7 +2233,8 @@ body {
 }
 
 .qq-textarea:focus {
-  border-color: #4a90e2;
+  border-color: #00d9ff;
+  box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.15);
 }
 
 .qq-textarea::placeholder {
@@ -1313,8 +2254,8 @@ body {
 }
 
 .status-card.connected {
-  background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%);
-  border-color: #4caf50;
+  background: linear-gradient(135deg, #d4f4dd 0%, #e8f9ed 100%);
+  border-color: #51cf66;
 }
 
 .status-icon {
@@ -1331,8 +2272,9 @@ body {
 }
 
 .status-card.connected .status-icon {
-  background: #4caf50;
+  background: linear-gradient(135deg, #a8e063 0%, #56ab2f 100%);
   color: white;
+  box-shadow: 0 2px 8px rgba(168, 224, 99, 0.4);
 }
 
 .status-info {
@@ -1854,6 +2796,8 @@ body {
   padding: 24px;
   border-radius: 12px;
   line-height: 2;
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.3);
+  font-weight: 500;
 }
 
 .info-card p {
@@ -1879,5 +2823,498 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8;
+}
+
+/* 游戏管理 - 紧凑版样式 */
+.login-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: 2px solid #dcdfe6;
+  background: white;
+  color: #606266;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.tab-btn:hover {
+  border-color: #4a90e2;
+  color: #4a90e2;
+}
+
+.tab-btn.active {
+  border-color: #00d9ff;
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
+  color: white;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 217, 255, 0.4);
+}
+
+.login-content {
+  animation: fadeIn 0.3s ease;
+}
+
+.account-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
+  border-radius: 8px;
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 217, 255, 0.3);
+}
+
+.account-avatar img {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2px solid white;
+}
+
+.offline-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: bold;
+  color: white;
+  border: 2px solid white;
+}
+
+.account-details {
+  flex: 1;
+}
+
+.account-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.account-type {
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.step-number {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 217, 255, 0.4);
+}
+
+.step-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step-hint {
+  font-size: 12px;
+  color: #606266;
+  margin-bottom: 4px;
+}
+
+.step-example {
+  font-size: 11px;
+  color: #909399;
+  font-family: 'Consolas', 'Monaco', monospace;
+  background: #f5f5f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.input-group-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-with-btn {
+  display: flex;
+  gap: 6px;
+}
+
+.qq-input-compact {
+  flex: 1;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.qq-input-compact:focus {
+  border-color: #4a90e2;
+  outline: none;
+}
+
+.qq-btn-small {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.qq-btn-block {
+  width: 100%;
+}
+
+.qq-btn-icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.download-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.version-type-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: #f5f5f5;
+  border-radius: 6px;
+}
+
+.type-tab {
+  flex: 1;
+  padding: 6px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 18px;
+  transition: all 0.2s ease;
+}
+
+.type-tab:hover {
+  background: rgba(74, 144, 226, 0.1);
+}
+
+.type-tab.active {
+  background: #4a90e2;
+  transform: scale(1.1);
+}
+
+.form-row-compact {
+  display: flex;
+  gap: 6px;
+}
+
+.qq-select-compact {
+  flex: 1;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  font-size: 13px;
+  background: white;
+  cursor: pointer;
+}
+
+.qq-select-compact:focus {
+  border-color: #4a90e2;
+  outline: none;
+}
+
+.progress-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.progress-card {
+  background: white;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #e8e8e8;
+}
+
+.progress-header-compact {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.progress-name-compact {
+  font-weight: 500;
+  color: #333;
+  font-size: 13px;
+}
+
+.progress-percentage {
+  font-weight: 600;
+  color: #4a90e2;
+  font-size: 13px;
+}
+
+.progress-bar-compact {
+  height: 6px;
+  background: #e8e8e8;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: #4a90e2;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-bar-fill.progress-active {
+  background: linear-gradient(90deg, #4a90e2 0%, #357abd 50%, #4a90e2 100%);
+  background-size: 200% 100%;
+  animation: progressShine 2s linear infinite;
+}
+
+.progress-bar-fill.progress-success {
+  background: #67c23a;
+}
+
+.progress-bar-fill.progress-error {
+  background: #f56c6c;
+}
+
+@keyframes progressShine {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+}
+
+.progress-status-compact {
+  font-size: 11px;
+  color: #909399;
+}
+
+.output-box-compact {
+  max-height: 200px;
+  padding: 12px;
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .progress-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 设备代码登录样式 */
+.device-auth-card {
+  animation: fadeIn 0.3s ease;
+}
+
+.device-code-modal .modal-content {
+  max-width: 480px;
+  width: 90%;
+  max-height: none;
+}
+
+.device-code-content {
+  background: white;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.device-code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, #00d9ff 0%, #00b8d4 100%);
+  color: white;
+}
+
+.device-code-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.device-code-header .modal-close {
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  border: none;
+  font-size: 28px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+}
+
+.device-code-header .modal-close:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: rotate(90deg);
+}
+
+.device-code-body {
+  padding: 24px;
+  background: white;
+}
+
+.login-instruction {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  background: #e8f4fd;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  align-items: flex-start;
+}
+
+.instruction-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.instruction-text {
+  font-size: 14px;
+  color: #606266;
+  line-height: 1.6;
+  flex: 1;
+}
+
+.code-display-large {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.3);
+}
+
+.code-label {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+  margin-bottom: 16px;
+  font-weight: 500;
+}
+
+.code-value-large {
+  font-size: 36px;
+  font-weight: 700;
+  font-family: 'Consolas', 'Monaco', monospace;
+  color: white;
+  letter-spacing: 6px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  word-break: break-all;
+}
+
+.open-login-section {
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.open-login-section .qq-btn-large {
+  padding: 16px 32px;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.open-hint {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.5;
+}
+
+.qq-btn-success {
+  background: linear-gradient(135deg, #a8e063 0%, #56ab2f 100%);
+  color: white;
+  font-weight: 600;
+}
+
+.qq-btn-success:hover {
+  background: linear-gradient(135deg, #95d450 0%, #4a9625 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(168, 224, 99, 0.5);
+}
+
+.auth-waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.waiting-spinner {
+  width: 18px;
+  height: 18px;
+  border: 3px solid #e8e8f0;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.waiting-text {
+  font-size: 14px;
+  color: #606266;
+}
+
+.login-hint {
+  font-size: 12px;
+  color: #909399;
+  text-align: center;
+  margin-top: 8px;
 }
 </style>
