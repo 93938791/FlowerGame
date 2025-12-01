@@ -12,7 +12,6 @@
       <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/resources/Packet.dll" afterDir="false" />
@@ -45,6 +44,12 @@
       <change afterPath="$PROJECT_DIR$/ui/main_window.py" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/utils/httpx.py" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/utils/thread_pool.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/web/icons/game-download.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/web/icons/mod.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/web/icons/modpack.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/web/icons/resourcepack.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/web/icons/shader.png" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -80,7 +85,7 @@
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "git-widget-placeholder": "master",
-    "last_opened_file_path": "C:/2025/11/FlowerGame/resources",
+    "last_opened_file_path": "C:/2025/11/FlowerGame/web/icons",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -92,6 +97,7 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\2025\11\FlowerGame\web\icons" />
       <recent name="C:\2025\11\FlowerGame\resources" />
     </key>
   </component>
@@ -110,7 +116,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1764469070200</updated>
-      <workItem from="1764469071128" duration="8204000" />
+      <workItem from="1764469071128" duration="8828000" />
     </task>
     <servers />
   </component>

@@ -14,7 +14,19 @@ logger = Logger().get_logger("ConfigCache")
 class ConfigCache:
     """配置缓存管理器"""
     
-    CACHE_FILE = Config.CONFIG_DIR / "user_config.json"
+    @classmethod
+    def _get_cache_file(cls):
+        """获取缓存文件路径"""
+        from config import Config
+        if not Config.is_configured():
+            # 如果未配置，使用临时目录
+            import tempfile
+            config_dir = Path(tempfile.gettempdir()) / "FlowerGame" / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            return config_dir / "user_config.json"
+        else:
+            Config.init_dirs()
+            return Config.CONFIG_DIR / "user_config.json"
     
     @classmethod
     def save(cls, config_data):
@@ -25,9 +37,10 @@ class ConfigCache:
             config_data: 配置字典
         """
         try:
-            Config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file = cls._get_cache_file()
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
             
-            with open(cls.CACHE_FILE, 'w', encoding='utf-8') as f:
+            with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=2)
             
             logger.info("配置已保存")
@@ -43,8 +56,9 @@ class ConfigCache:
             dict: 配置字典，如果不存在返回默认值
         """
         try:
-            if cls.CACHE_FILE.exists():
-                with open(cls.CACHE_FILE, 'r', encoding='utf-8') as f:
+            cache_file = cls._get_cache_file()
+            if cache_file.exists():
+                with open(cache_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                 
                 # 兼容旧版本配置：如果没有network字段，但有顶层的room_name/password
@@ -202,28 +216,43 @@ class ConfigCache:
         获取认证信息
         
         Returns:
-            dict: 认证信息，包含profile和offline_account
+            dict: 认证信息，包含profile、minecraft_token、access_token、refresh_token、minecraft_token_expires_at和offline_account
         """
         config = cls.load()
-        return config.get('auth', {'profile': None, 'offline_account': None})
+        return config.get('auth', {
+            'profile': None, 
+            'minecraft_token': None,
+            'access_token': None,
+            'refresh_token': None,
+            'minecraft_token_expires_at': None,
+            'offline_account': None
+        })
     
     @classmethod
-    def save_profile(cls, profile):
+    def save_profile(cls, profile, minecraft_token=None, access_token=None, refresh_token=None, minecraft_token_expires_at=None):
         """
         保存正版账号信息
         
         Args:
             profile: 账号信息
+            minecraft_token: Minecraft access token（用于启动游戏）
+            access_token: Microsoft OAuth access token
+            refresh_token: Microsoft OAuth refresh token（用于刷新）
+            minecraft_token_expires_at: Minecraft token 过期时间（ISO格式字符串）
         """
         config = cls.load()
         # 添加皮肤URL缓存（使用 Visage 3D 渲染）
         if profile and profile.get('id'):
-            uuid = profile['id']
+            uuid = profile['id'].replace('-', '')  # 移除 UUID 中的连字符
             profile['skin_url'] = f"https://visage.surgeplay.com/full/256/{uuid}"
-            profile['avatar_url'] = f"https://visage.surgeplay.com/avatar/64/{uuid}"
+            profile['avatar_url'] = f"https://visage.surgeplay.com/face/64/{uuid}"
         
         config['auth'] = {
             'profile': profile,
+            'minecraft_token': minecraft_token,  # Minecraft token
+            'access_token': access_token,  # Microsoft OAuth token
+            'refresh_token': refresh_token,  # Refresh token
+            'minecraft_token_expires_at': minecraft_token_expires_at,  # 过期时间
             'offline_account': None
         }
         cls.save(config)
@@ -276,7 +305,18 @@ class CacheManager:
             cache_dir: 缓存目录路径
             default_ttl: 默认缓存有效期（秒）
         """
-        self.cache_dir = cache_dir or Config.CACHE_DIR
+        if cache_dir:
+            self.cache_dir = cache_dir
+        else:
+            from config import Config
+            if not Config.is_configured():
+                # 如果未配置，使用临时目录
+                import tempfile
+                self.cache_dir = Path(tempfile.gettempdir()) / "FlowerGame" / "cache"
+            else:
+                Config.init_dirs()
+                self.cache_dir = Config.CACHE_DIR
+        
         self.default_ttl = default_ttl
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._in_memory_cache = {}

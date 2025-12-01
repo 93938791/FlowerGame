@@ -92,13 +92,23 @@ class Logger:
             return
         
         self._initialized = True
-        Config.init_dirs()
+        from config import Config
+        
+        # 如果 Config 未配置，使用临时目录
+        if not Config.is_configured():
+            # 首次启动，使用临时目录
+            import tempfile
+            log_dir = Path(tempfile.gettempdir()) / "FlowerGame" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            Config.init_dirs()
+            log_dir = Config.LOG_DIR
         
         # 清理旧日志文件
-        self._cleanup_old_logs()
+        self._cleanup_old_logs(log_dir)
         
         # 创建日志文件
-        log_file = Config.LOG_DIR / f"app_{datetime.now().strftime('%Y%m%d')}.log"
+        log_file = log_dir / f"app_{datetime.now().strftime('%Y%m%d')}.log"
         
         # 配置详细日志格式，便于调试
         formatter = logging.Formatter(
@@ -116,18 +126,18 @@ class Logger:
             backupCount=self.BACKUP_COUNT,
             encoding='utf-8'
         )
-        file_handler.setLevel(logging.INFO)  # 文件日志只记录INFO及以上级别，减少日志量
+        file_handler.setLevel(logging.DEBUG)  # 文件记录所有DEBUG及以上级别
         file_handler.setFormatter(formatter)
         file_handler.addFilter(duplicate_filter)  # 添加重复日志过滤
         
         # 控制台处理器（使用安全的流处理器）
-        # 即使sys.stdout为None也不会报错
+        # 只显示WARNING及以上级别，减少控制台刷屏
         import sys
         console_handler = None
         try:
             # 使用SafeStreamHandler，即使流为None也不会报错
             console_handler = SafeStreamHandler(sys.stdout)
-            console_handler.setLevel(logging.INFO)
+            console_handler.setLevel(logging.WARNING)  # 控制台只显示WARNING及ERROR
             console_handler.setFormatter(formatter)
             console_handler.addFilter(duplicate_filter)  # 添加重复日志过滤
         except Exception:
@@ -135,6 +145,7 @@ class Logger:
             console_handler = None
         
         # 根日志器
+        from config import Config
         self.logger = logging.getLogger(Config.APP_NAME)
         self.logger.setLevel(logging.DEBUG)
         self.logger.addHandler(file_handler)
@@ -144,10 +155,10 @@ class Logger:
         # 添加全局过滤器到根日志器
         self.logger.addFilter(duplicate_filter)
     
-    def _cleanup_old_logs(self):
+    def _cleanup_old_logs(self, log_dir):
         """清理旧的日志文件"""
         try:
-            if not Config.LOG_DIR.exists():
+            if not log_dir.exists():
                 return
             
             # 计算过期时间
@@ -157,7 +168,7 @@ class Logger:
             total_size = 0
             
             # 遍历日志目录
-            for log_file in Config.LOG_DIR.glob("app_*.log*"):
+            for log_file in log_dir.glob("app_*.log*"):
                 try:
                     # 获取文件修改时间
                     file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
@@ -181,6 +192,7 @@ class Logger:
     
     def get_logger(self, name=None):
         """获取日志器"""
+        from config import Config
         if name:
             return logging.getLogger(f"{Config.APP_NAME}.{name}")
         return self.logger

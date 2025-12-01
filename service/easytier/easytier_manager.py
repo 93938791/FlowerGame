@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from utils.logger import Logger
 from utils.process_helper import ProcessHelper
-from config import Config
+from config import Config, RESOURCE_DIR
 
 logger = Logger().get_logger("EasytierManager")
 
@@ -147,7 +147,7 @@ class EasytierManager:
         logger.debug(f"完整启动参数: {' '.join(args)}")
         
         # 配置 DLL 搜索路径并检查依赖
-        dll_dir = Config.RESOURCE_DIR / "easytier"
+        dll_dir = RESOURCE_DIR / "easytier"
         try:
             if dll_dir.exists():
                 if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
@@ -619,10 +619,11 @@ class EasytierManager:
                         logger.debug(f"找到下载流量: {value_str} -> {rx_bytes} bytes")
             
             # 只在流量大于0时才打印INFO日志，避免频繁输出0流量
-            if tx_bytes > 0 or rx_bytes > 0:
-                logger.info(f"解析流量统计: TX={tx_bytes} bytes ({self._format_bytes(tx_bytes)}), RX={rx_bytes} bytes ({self._format_bytes(rx_bytes)})")
-            else:
-                logger.debug(f"解析流量统计: TX={tx_bytes} bytes, RX={rx_bytes} bytes")
+            # if tx_bytes > 0 or rx_bytes > 0:
+            #     logger.info(f"解析流量统计: TX={tx_bytes} bytes ({self._format_bytes(tx_bytes)}), RX={rx_bytes} bytes ({self._format_bytes(rx_bytes)})")
+            # else:
+            #     logger.debug(f"解析流量统计: TX={tx_bytes} bytes, RX={rx_bytes} bytes")
+            pass  # 已禁用流量统计日志
             
         except Exception as e:
             logger.warning(f"解析流量统计失败: {e}")

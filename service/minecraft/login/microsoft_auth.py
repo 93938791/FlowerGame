@@ -7,6 +7,7 @@ import json
 import requests
 import webbrowser
 import urllib.parse
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
 from utils.logger import Logger
 from service.cache.config_cache import ConfigCache
@@ -45,10 +46,12 @@ class MicrosoftAuth:
         self.redirect_uri = redirect_uri if redirect_uri else self.DEFAULT_REDIRECT_URI
         
         self.access_token = None
+        self.refresh_token = None  # Microsoft OAuth refresh token
         self.xbox_live_token = None
         self.xsts_token = None
         self.user_hash = None
         self.minecraft_token = None
+        self.minecraft_token_expires_at = None  # Minecraft token 过期时间
         self.minecraft_profile = None
         self.offline_account = None  # 离线账号
         
@@ -168,6 +171,7 @@ class MicrosoftAuth:
             result = response.json()
             
             self.access_token = result.get("access_token")
+            self.refresh_token = result.get("refresh_token")  # 保存 refresh_token
             
             if not self.access_token:
                 error_msg = "响应中未找到access_token"
@@ -294,6 +298,7 @@ class MicrosoftAuth:
             
             result = response.json()
             self.access_token = result.get("access_token")
+            self.refresh_token = result.get("refresh_token")  # 保存 refresh_token
             
             if not self.access_token:
                 error_msg = "响应中未找到access_token"
@@ -311,6 +316,143 @@ class MicrosoftAuth:
             error_msg = f"获取Microsoft令牌失败: {e}"
             logger.error(error_msg)
             return False, error_msg
+    
+    def refresh_access_token(self) -> Tuple[bool, Optional[str]]:
+        """
+        使用 refresh_token 刷新 Microsoft access token
+        
+        Returns:
+            (成功标志, 错误信息或None)
+        """
+        try:
+            if not self.refresh_token:
+                error_msg = "缺少refresh_token，无法刷新"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            data = {
+                "client_id": self.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": self.refresh_token,
+                "scope": self.SCOPE
+            }
+            
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
+            logger.info("🔄 正在使用 refresh_token 刷新 Microsoft 令牌...")
+            response = requests.post(self.TOKEN_URL, data=data, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            result = response.json()
+            self.access_token = result.get("access_token")
+            new_refresh_token = result.get("refresh_token")
+            
+            # 如果返回了新的 refresh_token，更新它
+            if new_refresh_token:
+                self.refresh_token = new_refresh_token
+            
+            if not self.access_token:
+                error_msg = "响应中未找到access_token"
+                logger.error(error_msg)
+                return False, error_msg
+            
+            logger.info("✅ 成功刷新 Microsoft 令牌")
+            return True, None
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f"请求失败: {e}"
+            logger.error(error_msg)
+            return False, error_msg
+        except Exception as e:
+            error_msg = f"刷新 Microsoft 令牌失败: {e}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    def refresh_minecraft_token(self) -> Tuple[bool, Optional[str]]:
+        """
+        刷新 Minecraft token（完整流程）
+        使用 refresh_token 重新获取所有需要的 tokens
+        
+        Returns:
+            (成功标志, 错误信息或None)
+        """
+        logger.info("🔄 开始刷新 Minecraft token...")
+        
+        # 步骤1: 刷新 Microsoft access token
+        success, error = self.refresh_access_token()
+        if not success:
+            return False, error
+        
+        # 步骤2: 获取 Xbox Live 令牌
+        success, error = self.get_xbox_live_token()
+        if not success:
+            return False, error
+        
+        # 步骤3: 获取 XSTS 令牌
+        success, error = self.get_xsts_token()
+        if not success:
+            return False, error
+        
+        # 步骤4: 获取 Minecraft 令牌
+        success, error = self.get_minecraft_token()
+        if not success:
+            return False, error
+        
+        # 保存新的 tokens
+        if self.minecraft_profile:
+            self.save_profile(
+                self.minecraft_profile,
+                self.minecraft_token,
+                self.access_token,
+                self.refresh_token
+            )
+        
+        logger.info("✅ Minecraft token 刷新成功")
+        return True, None
+    
+    def is_token_expired(self) -> bool:
+        """
+        检查 Minecraft token 是否已过期
+        
+        Returns:
+            True 表示已过期或即将过期，False 表示仍然有效
+        """
+        if not self.minecraft_token:
+            return True
+        
+        if not self.minecraft_token_expires_at:
+            # 如果没有过期时间，认为已过期
+            return True
+        
+        # 当前时间大于或等于过期时间则过期
+        return datetime.now() >= self.minecraft_token_expires_at
+    
+    def check_and_refresh_token(self) -> Tuple[bool, Optional[str]]:
+        """
+        检查并刷新 token（如果需要）
+        
+        Returns:
+            (成功标志, 错误信息或None)
+        """
+        # 没有登录信息，直接返回
+        if not self.minecraft_profile:
+            return True, None
+        
+        # 检查 token 是否过期
+        if not self.is_token_expired():
+            logger.info("✅ Token 仍然有效，无需刷新")
+            return True, None
+        
+        # 检查是否有 refresh_token
+        if not self.refresh_token:
+            logger.warning("⚠️ Token 已过期，但没有 refresh_token，需要重新登录")
+            return False, "登录已过期，请重新登录"
+        
+        # 刷新 token
+        logger.info("🔄 Token 已过期，开始自动刷新...")
+        return self.refresh_minecraft_token()
     
     def get_xbox_live_token(self) -> Tuple[bool, Optional[str]]:
         """
@@ -502,13 +644,17 @@ class MicrosoftAuth:
             
             result = response.json()
             self.minecraft_token = result.get("access_token")
+            expires_in = result.get("expires_in", 86400)  # 默认 24 小时
+            
+            # 计算过期时间（提前 10 分钟刷新）
+            self.minecraft_token_expires_at = datetime.now() + timedelta(seconds=expires_in - 600)
             
             if not self.minecraft_token:
                 error_msg = "响应中未找到Minecraft令牌"
                 logger.error(error_msg)
                 return False, error_msg
             
-            logger.info("✅ 成功获取Minecraft令牌")
+            logger.info(f"✅ 成功获取Minecraft令牌，过期时间: {self.minecraft_token_expires_at.strftime('%Y-%m-%d %H:%M:%S')}")
             return True, None
             
         except requests.exceptions.RequestException as e:
@@ -610,7 +756,11 @@ class MicrosoftAuth:
         """
         return {
             "ok": self.minecraft_profile is not None or self.offline_account is not None,
+            "minecraft_token": self.minecraft_token,  # 返回 Minecraft token
+            "access_token": self.access_token,  # Microsoft OAuth token
+            "refresh_token": self.refresh_token,  # Refresh token
             "has_access_token": self.access_token is not None,
+            "has_refresh_token": self.refresh_token is not None,
             "has_xbox_live_token": self.xbox_live_token is not None,
             "has_xsts_token": self.xsts_token is not None,
             "has_minecraft_token": self.minecraft_token is not None,
@@ -624,7 +774,19 @@ class MicrosoftAuth:
         try:
             auth_info = ConfigCache.get_auth_info()
             self.minecraft_profile = auth_info.get('profile')
+            self.minecraft_token = auth_info.get('minecraft_token')  # 加载 Minecraft token
+            self.access_token = auth_info.get('access_token')  # 加载 Microsoft OAuth token
+            self.refresh_token = auth_info.get('refresh_token')  # 加载 refresh token
             self.offline_account = auth_info.get('offline_account')
+            
+            # 加载过期时间
+            expires_at_str = auth_info.get('minecraft_token_expires_at')
+            if expires_at_str:
+                try:
+                    self.minecraft_token_expires_at = datetime.fromisoformat(expires_at_str)
+                except:
+                    self.minecraft_token_expires_at = None
+            
             if self.minecraft_profile:
                 logger.info(f"已从配置文件恢复正版账号: {self.minecraft_profile.get('name')}")
             if self.offline_account:
@@ -632,11 +794,22 @@ class MicrosoftAuth:
         except Exception as e:
             logger.error(f"加载认证配置失败: {e}")
     
-    def save_profile(self, profile: Dict):
+    def save_profile(self, profile: Dict, minecraft_token: str = None, access_token: str = None, refresh_token: str = None):
         """保存正版账号信息"""
         self.minecraft_profile = profile
         self.offline_account = None  # 清除离线账号
-        ConfigCache.save_profile(profile)
+        
+        # 使用传入的值或当前实例的值
+        mc_token = minecraft_token if minecraft_token is not None else self.minecraft_token
+        ms_token = access_token if access_token is not None else self.access_token
+        ref_token = refresh_token if refresh_token is not None else self.refresh_token
+        
+        # 过期时间转为字符串
+        expires_at_str = None
+        if self.minecraft_token_expires_at:
+            expires_at_str = self.minecraft_token_expires_at.isoformat()
+        
+        ConfigCache.save_profile(profile, mc_token, ms_token, ref_token, expires_at_str)
     
     def save_offline_account(self, username: str):
         """保存离线账号信息"""
@@ -648,6 +821,7 @@ class MicrosoftAuth:
         """清除正版账号信息"""
         self.minecraft_profile = None
         self.access_token = None
+        self.refresh_token = None  # 清除 refresh token
         self.xbox_live_token = None
         self.xsts_token = None
         self.user_hash = None

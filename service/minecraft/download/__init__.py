@@ -1,33 +1,53 @@
 """
-下载服务 - 处理游戏版本、加载器、模组等资源的下载
+Minecraft 下载模块
+
+提供高效的 Minecraft 版本下载功能：
+- 基于 httpx[http2] 的高速下载
+- 连接池复用，避免重复建立连接
+- 自动镜像加速（BMCLAPI、MCBBS）
+- 支持原版和加载器版本（Forge、Fabric、NeoForge、OptiFine）
+- 完整的进度回调和错误处理
+
+使用示例：
+    from service.minecraft.download import MinecraftDownloadManager, LoaderType
+    
+    # 下载原版
+    manager = MinecraftDownloadManager()
+    manager.download_vanilla("1.20.1")
+    
+    # 下载 Fabric 版本
+    manager.download_with_loader("1.20.1", LoaderType.FABRIC, "0.15.11")
+    
+    # 列出所有版本
+    versions = manager.list_versions("release")
 """
 
-# 从独立的业务文件中导出DownloadService类
-from .download_service import DownloadService
+from .download_manager import MinecraftDownloadManager, DownloadProgress
+from .loader_support import LoaderType, LoaderManager
+from .mirror_utils import MirrorManager, MirrorSource
+from .version_manifest import VersionManifest
+from .version_info import VersionInfo, RuleEvaluator
+from .http_downloader import HttpDownloader, DownloadTask
 
-# 导出所有相关类，方便外部使用
-from .download_config import DownloadConfig
-from .async_http2_downloader import AsyncHTTP2Downloader
-from .download_thread import DownloadThread
-from .mirror_utils import MirrorUtils
-from .modrinth_client import ModrinthClient
-
-# 导出加载器类
-from .loaders.fabric_loader import FabricLoader
-from .loaders.forge_loader import ForgeLoader
-from .loaders.neoforge_loader import NeoForgeLoader
-from .loaders.optifine_loader import OptiFineLoader
-
-# 定义包的公共API
 __all__ = [
-    "DownloadService",
-    "DownloadConfig",
-    "AsyncHTTP2Downloader",
-    "DownloadThread",
-    "MirrorUtils",
-    "ModrinthClient",
-    "FabricLoader",
-    "ForgeLoader",
-    "NeoForgeLoader",
-    "OptiFineLoader"
+    # 主要接口
+    "MinecraftDownloadManager",
+    "DownloadProgress",
+    
+    # 加载器支持
+    "LoaderType",
+    "LoaderManager",
+    
+    # 镜像管理
+    "MirrorManager",
+    "MirrorSource",
+    
+    # 版本管理
+    "VersionManifest",
+    "VersionInfo",
+    "RuleEvaluator",
+    
+    # 下载器
+    "HttpDownloader",
+    "DownloadTask",
 ]
