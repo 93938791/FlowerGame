@@ -1,5 +1,9 @@
 <template>
-  <div class="app-layout">
+  <!-- 后端连接中页面 -->
+  <LoadingPage v-if="!isBackendConnected" />
+
+  <!-- 主应用页面 -->
+  <div v-else class="app-layout">
     <!-- Toast 提示 -->
     <Toast :show="toast.show" :message="toast.message" :type="toast.type" />
     
@@ -24,7 +28,11 @@
       <div v-if="deviceCodeData" class="modal-overlay device-code-modal" @click="cancelDeviceAuth">
         <div class="modal-content device-code-content" @click.stop>
           <div class="device-code-header">
-            <h3>🔐 Microsoft 登录</h3>
+            <div class="header-icon">🔐</div>
+            <div class="header-content">
+              <h3>Microsoft 登录</h3>
+              <p class="header-subtitle">使用设备代码完成身份验证</p>
+            </div>
             <button @click="cancelDeviceAuth" class="modal-close">×</button>
           </div>
           
@@ -40,8 +48,8 @@
             </div>
             
             <div class="open-login-section">
-              <button @click="copyAndOpen" class="qq-btn qq-btn-success qq-btn-block qq-btn-large">
-                🚀 复制代码并打开登录页面
+              <button @click="copyAndOpen" class="btn-primary btn-block btn-large">
+                <span>🚀</span> 复制代码并打开登录页面
               </button>
               <div class="open-hint">代码会自动复制，在新窗口中直接粘贴即可</div>
             </div>
@@ -58,7 +66,11 @@
       <div v-if="showOfflineLogin" class="modal-overlay" @click="showOfflineLogin = false">
         <div class="modal-content offline-login-modal" @click.stop>
           <div class="device-code-header">
-            <h3>👤 离线登录</h3>
+            <div class="header-icon">👤</div>
+            <div class="header-content">
+              <h3>离线登录</h3>
+              <p class="header-subtitle">使用自定义游戏名称进行游戏</p>
+            </div>
             <button @click="showOfflineLogin = false" class="modal-close">×</button>
           </div>
           <div class="device-code-body">
@@ -66,15 +78,21 @@
               <div class="instruction-icon">ℹ️</div>
               <div class="instruction-text">输入一个游戏名称（3-16个字符）</div>
             </div>
-            <input 
-              v-model="offlineName" 
-              placeholder="输入游戏名称" 
-              class="qq-input qq-input-large"
-              maxlength="16"
-              @keyup.enter="confirmOfflineLogin"
-            />
-            <button @click="confirmOfflineLogin" class="qq-btn qq-btn-success qq-btn-block qq-btn-large" style="margin-top: 16px;">
-              ✅ 确认登录
+            <div class="form-group">
+              <label class="form-label">
+                <span class="label-icon">✏️</span>
+                游戏名称
+              </label>
+              <input 
+                v-model="offlineName" 
+                placeholder="输入游戏名称" 
+                class="form-input"
+                maxlength="16"
+                @keyup.enter="confirmOfflineLogin"
+              />
+            </div>
+            <button @click="confirmOfflineLogin" class="btn-success btn-block btn-large" style="margin-top: 20px;">
+              <span>✅</span> 确认登录
             </button>
           </div>
         </div>
@@ -86,11 +104,21 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useAuth } from './composables/useAuth'
 import { useToast } from './composables/useToast'
+import { useBackend } from './composables/useBackend'
 import Toast from './components/Toast.vue'
 import Sidebar from './components/Sidebar.vue'
+import LoadingPage from './components/LoadingPage.vue'
+
+// 全局网络状态管理
+import { provide } from 'vue'
 
 const { accountInfo, offlineAccount, isAuthenticating, deviceCodeData, authProgress, loadAccountFromCache, loadOfflineFromCache, logout, logoutOffline } = useAuth()
 const { toast, showToast } = useToast()
+const { fetchApi } = useBackend()
+
+// 后端连接状态
+const isBackendConnected = ref(false)
+let healthCheckTimer: ReturnType<typeof setInterval> | null = null
 
 const showOfflineLogin = ref(false)
 const offlineName = ref('')
@@ -100,17 +128,31 @@ const networkStatus = ref({
   virtual_ip: '未连接'
 })
 
+// 提供网络状态给所有子组件
+provide('networkStatus', networkStatus)
+
+// 接收来自子组件的状态更新
+// 我们可以通过 provide/inject 或者简单的 window 事件来同步状态
+// 这里使用 window 自定义事件，因为 WebSocket 连接在 index.vue 中管理
+if (typeof window !== 'undefined') {
+  window.addEventListener('easytier-update', (event: any) => {
+    if (event.detail) {
+      networkStatus.value = event.detail
+    }
+  })
+}
+
 let pollInterval: ReturnType<typeof setInterval> | null = null
 
 // 设备授权相关
 async function startDeviceAuth() {
   isAuthenticating.value = true
   try {
-    const r = await fetch('/api/auth/device-code')
+    const r = await fetchApi('/api/auth/device-code')
     const result = await r.json()
     
-    if (result.ok && result.device_code) {
-      deviceCodeData.value = result.device_code
+    if (result.ok && result.data) {
+      deviceCodeData.value = result.data
       startPolling()
     } else {
       showToast(result.error || '获取设备码失败', 'error')
@@ -158,7 +200,7 @@ function startPolling() {
     authProgress.value = `等待授权中... (${pollCount}/${maxPolls})`
     
     try {
-      const r = await fetch('/api/auth/poll-device-token', {
+      const r = await fetchApi('/api/auth/poll-device-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ device_code: deviceCodeData.value.device_code })
@@ -198,7 +240,7 @@ async function confirmOfflineLogin() {
   }
   
   try {
-    const r = await fetch('/api/auth/save-offline', {
+    const r = await fetchApi('/api/auth/save-offline', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: offlineName.value })
@@ -215,18 +257,129 @@ async function confirmOfflineLogin() {
     showToast(`登录失败: ${e.message}`, 'error')
   }
 }
+// 预加载图标，避免每次切换页面时重新加载
+function preloadIcons() {
+  const icons = [
+    '/icons/vanilla.png',
+    '/icons/fabric.png',
+    '/icons/forge.png',
+    '/icons/neoforge.png',
+    '/icons/optifine.png',
+    '/icons/download.png',
+    '/icons/mod.png',
+    '/icons/modpack.png',
+    '/icons/resourcepack.png',
+    '/icons/shader.png',
+    '/icons/construction.png',
+    '/icons/game-download.png',
+    '/icons/fluid.png',
+    '/icons/drop.png',
+    '/icons/good.png',
+    '/icons/laggy.png'
+  ]
+  
+  icons.forEach(src => {
+    const img = new Image()
+    img.src = src
+  })
+}
+
+// 检查后端连接
+async function checkBackendHealth() {
+  try {
+    // 尝试获取一个简单的 API，例如 auth status
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 2000)
+    
+    const r = await fetch('http://127.0.0.1:17890/api/auth/status', { 
+      method: 'GET',
+      signal: controller.signal
+    })
+    
+    clearTimeout(timeoutId)
+    
+    if (r.ok) {
+      if (!isBackendConnected.value) {
+        // 从断开变为连接，重新加载数据
+        isBackendConnected.value = true
+        loadAccountFromCache()
+        loadOfflineFromCache()
+      }
+    } else {
+      isBackendConnected.value = false
+    }
+  } catch (e) {
+    isBackendConnected.value = false
+  }
+}
 
 onMounted(() => {
-  loadAccountFromCache()
-  loadOfflineFromCache()
+  // 立即检查一次
+  checkBackendHealth()
+  
+  // 启动定时检查 (每秒检查一次，确保响应迅速)
+  healthCheckTimer = setInterval(checkBackendHealth, 1000)
+  
+  preloadIcons()
 })
 
 onUnmounted(() => {
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer)
+    healthCheckTimer = null
+  }
   stopPolling()
 })
 </script>
 
 <style>
+/* ==================== 全局深色主题样式 ==================== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* 主色调 */
+  --color-primary: #22c55e;
+  --color-primary-hover: #16a34a;
+  --color-primary-light: rgba(34, 197, 94, 0.15);
+  
+  /* 辅助色 */
+  --color-blue: #3b82f6;
+  --color-blue-hover: #2563eb;
+  --color-cyan: #22d3ee;
+  --color-orange: #f97316;
+  --color-red: #ef4444;
+  --color-yellow: #fbbf24;
+  
+  /* 背景色 */
+  --bg-base: #0f172a;
+  --bg-surface: #1e293b;
+  --bg-elevated: #334155;
+  --bg-card: rgba(30, 41, 59, 0.8);
+  --bg-hover: rgba(148, 163, 184, 0.1);
+  
+  /* 文字色 */
+  --text-primary: #f1f5f9;
+  --text-secondary: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-subtle: #64748b;
+  
+  /* 边框 */
+  --border-color: rgba(148, 163, 184, 0.15);
+  --border-light: rgba(148, 163, 184, 0.1);
+  
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.6);
+  
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -234,82 +387,122 @@ onUnmounted(() => {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: var(--bg-base);
+  color: var(--text-primary);
 }
 
+/* ==================== 应用布局 ==================== */
 .app-layout {
   display: flex;
-  height: 100vh;
-  background: #f5f5f5;
+  min-height: 100vh;
+  background: linear-gradient(135deg, var(--bg-base) 0%, #1a1f35 100%);
 }
 
 .main-content {
   flex: 1;
-  margin-left: 240px;
+  margin-left: 260px;
   overflow-y: auto;
-  padding: 24px;
+  padding: 28px;
+  background: transparent;
 }
 
-/* 模态框样式 */
+/* ==================== 模态框样式 ==================== */
 .modal-overlay {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 9999;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .modal-content {
-  background: white;
-  border-radius: 16px;
-  max-width: 500px;
+  background: linear-gradient(145deg, var(--bg-surface) 0%, var(--bg-base) 100%);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-xl);
+  max-width: 480px;
   width: 90%;
-  max-height: 80vh;
+  max-height: 85vh;
   overflow-y: auto;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-xl), 0 0 0 1px var(--border-light);
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .device-code-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 14px;
   padding: 24px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid var(--border-light);
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.08) 0%, transparent 100%);
+}
+
+.header-icon {
+  font-size: 32px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.header-content {
+  flex: 1;
 }
 
 .device-code-header h3 {
   font-size: 20px;
-  color: #2c3e50;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 4px 0;
+  letter-spacing: -0.3px;
+}
+
+.header-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
   margin: 0;
 }
 
 .modal-close {
-  background: none;
+  width: 36px;
+  height: 36px;
   border: none;
-  font-size: 28px;
-  color: #909399;
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 20px;
   cursor: pointer;
-  width: 32px;
-  height: 32px;
+  transition: all 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  transition: all 0.3s ease;
 }
 
 .modal-close:hover {
-  background: #f5f5f5;
-  color: #606266;
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
 }
 
 .device-code-body {
@@ -320,39 +513,47 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px;
-  background: #e8f4f8;
-  border-radius: 8px;
-  margin-bottom: 20px;
+  padding: 14px 16px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: var(--radius-md);
+  margin-bottom: 24px;
 }
 
 .instruction-icon {
-  font-size: 24px;
+  font-size: 22px;
 }
 
 .instruction-text {
   flex: 1;
   font-size: 14px;
-  color: #606266;
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 
 .code-display-large {
   text-align: center;
+  padding: 24px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-lg);
   margin-bottom: 24px;
 }
 
 .code-label {
-  font-size: 14px;
-  color: #909399;
-  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 .code-value-large {
-  font-size: 32px;
+  font-size: 36px;
   font-weight: 700;
-  color: #00d9ff;
-  letter-spacing: 4px;
-  font-family: 'Courier New', monospace;
+  color: var(--color-cyan);
+  letter-spacing: 6px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  text-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
 }
 
 .open-login-section {
@@ -362,25 +563,25 @@ body {
 .open-hint {
   text-align: center;
   font-size: 13px;
-  color: #909399;
+  color: var(--text-subtle);
   margin-top: 12px;
 }
 
 .auth-waiting {
   text-align: center;
-  padding: 20px;
-  background: #f8f9fa;
-  border-radius: 8px;
+  padding: 24px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-md);
 }
 
 .waiting-spinner {
   width: 40px;
   height: 40px;
-  margin: 0 auto 12px;
-  border: 4px solid #e8e8e8;
-  border-top-color: #00d9ff;
+  margin: 0 auto 14px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--color-primary);
   border-radius: 50%;
-  animation: spin 1s linear infinite;
+  animation: spin 0.8s linear infinite;
 }
 
 @keyframes spin {
@@ -389,56 +590,198 @@ body {
 
 .waiting-text {
   font-size: 14px;
-  color: #606266;
+  color: var(--text-muted);
 }
 
-.qq-btn {
-  border: none;
-  border-radius: 6px;
+/* ==================== 表单样式 ==================== */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 14px;
-  padding: 0 20px;
-  height: 36px;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  font-family: inherit;
-}
-
-.qq-btn-success {
-  background: #67c23a;
-  color: white;
-}
-
-.qq-btn-success:hover {
-  background: #5daf34;
-}
-
-.qq-btn-block {
-  width: 100%;
-}
-
-.qq-btn-large {
-  height: 48px;
-  font-size: 16px;
   font-weight: 600;
+  color: var(--text-secondary);
 }
 
-.qq-input {
-  width: 100%;
-  padding: 12px 16px;
-  border: 2px solid #e8e8e8;
-  border-radius: 8px;
-  font-size: 14px;
-  font-family: inherit;
-  transition: border-color 0.3s ease;
-}
-
-.qq-input:focus {
-  outline: none;
-  border-color: #00d9ff;
-}
-
-.qq-input-large {
-  height: 48px;
+.label-icon {
   font-size: 16px;
+}
+
+.form-input,
+.form-select,
+.form-textarea {
+  width: 100%;
+  padding: 14px 18px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 15px;
+  color: var(--text-primary);
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.form-input:focus,
+.form-select:focus,
+.form-textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.form-input::placeholder {
+  color: var(--text-subtle);
+}
+
+.form-select {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  padding-right: 40px;
+}
+
+.form-select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* ==================== 按钮样式 ==================== */
+.btn-primary,
+.btn-success,
+.btn-secondary,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-blue) 0%, var(--color-blue-hover) 100%);
+  color: white;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+}
+
+.btn-success {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
+  color: white;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+}
+
+.btn-success:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(34, 197, 94, 0.4);
+}
+
+.btn-secondary {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.btn-danger {
+  background: linear-gradient(135deg, var(--color-red) 0%, #dc2626 100%);
+  color: white;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.btn-danger:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-large {
+  padding: 16px 28px;
+  font-size: 16px;
+}
+
+.btn-primary:disabled,
+.btn-success:disabled,
+.btn-secondary:disabled,
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+/* ==================== 卡片样式 ==================== */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  backdrop-filter: blur(10px);
+}
+
+.card-header {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.card-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ==================== 滚动条样式 ==================== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.05);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.3);
+}
+
+/* ==================== 响应式 ==================== */
+@media (max-width: 768px) {
+  .main-content {
+    margin-left: 0;
+    padding: 16px;
+  }
 }
 </style>

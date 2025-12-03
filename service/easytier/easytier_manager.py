@@ -11,6 +11,7 @@ from pathlib import Path
 from utils.logger import Logger
 from utils.process_helper import ProcessHelper
 from config import Config, RESOURCE_DIR
+from service.easytier.udp_message_manager import UDPMessageManager
 
 logger = Logger().get_logger("EasytierManager")
 
@@ -21,6 +22,7 @@ class EasytierManager:
         self.process = None
         self.virtual_ip = None
         self.peer_ips = []
+        self.udp_manager = None  # UDP消息管理器
         # 流量统计数据
         self.last_tx_bytes = 0
         self.last_rx_bytes = 0
@@ -103,7 +105,8 @@ class EasytierManager:
             "-d",  # daemon 模式，后台运行
             "--network-name", net_name,
             "--network-secret", net_secret,
-            "--dev-name", tun_device_name  # 固定TUN设备名称
+            "--dev-name", tun_device_name,  # 固定TUN设备名称
+            # "--use-smoltcp"  # 禁用 smoltcp，使用系统 TUN 设备（需要管理员权限，更稳定）
         ]
         
         # 添加节点
@@ -237,7 +240,7 @@ class EasytierManager:
         logger.info("RPC 服务已就绪，等待虚拟IP分配...")
         
         # 等待虚拟网络初始化并分配IP
-        max_retries = 10
+        max_retries = 30  # 增加重试次数，适应较慢的 VM 环境
         for i in range(max_retries):
             # 每次检查前先验证进程是否还在运行
             if not ProcessHelper.is_process_running(self.process):
@@ -254,17 +257,92 @@ class EasytierManager:
         
         # 检查虚拟IP是否分配成功
         if self.virtual_ip in ["waiting...", "unknown", None]:
-            logger.error(f"虚拟IP分配失败，当前状态: {self.virtual_ip}")
-            # 停止进程
+            logger.warning(f"DHCP 分配超时 (当前状态: {self.virtual_ip})，尝试使用静态 IP 重启...")
+            
+            # 停止当前进程
             self.stop()
-            return False
+            time.sleep(2)
+            
+            # 生成静态 IP (10.144.x.x)
+            import hashlib
+            import uuid
+            
+            # 获取 MAC 地址作为唯一标识的一部分
+            mac = uuid.getnode()
+            unique_str = f"{Config.HOSTNAME}-{mac}"
+            
+            h = hashlib.sha256(unique_str.encode()).hexdigest()
+            part3 = int(h[0:2], 16)
+            part4 = int(h[2:4], 16)
+            if part4 == 0: part4 = 1
+            if part4 == 255: part4 = 254
+            
+            static_ip = f"10.144.{part3}.{part4}"
+            logger.info(f"使用静态 IP 重启: {static_ip} (基于: {unique_str})")
+            
+            # 添加 --ipv4 参数
+            args.extend(["--ipv4", static_ip])
+            
+            # 重新启动进程
+            self.process = ProcessHelper.start_process(
+                Config.EASYTIER_BIN,
+                args=args,
+                hide_window=False,
+                require_admin=True,
+                working_dir=working_dir
+            )
+            
+            if not self.process:
+                logger.error("重启 easytier-core.exe 失败")
+                return False
+                
+            # 再次等待 RPC 就绪
+            if not ProcessHelper.wait_for_port(rpc_port, timeout=20):
+                logger.error("重启后 RPC 服务未就绪")
+                self.stop()
+                return False
+                
+            # 再次获取 IP (静态 IP 应该很快生效)
+            for i in range(5):
+                time.sleep(1)
+                self.virtual_ip = self._get_virtual_ip()
+                if self.virtual_ip and self.virtual_ip not in ["waiting...", "unknown"]:
+                    logger.info(f"静态 IP 生效: {self.virtual_ip}")
+                    break
+            
+            if self.virtual_ip in ["waiting...", "unknown", None]:
+                logger.error("即使使用静态 IP 也无法获取虚拟 IP，请检查驱动或权限")
+                self.stop()
+                return False
         
         logger.info(f"Easytier启动成功，虚拟IP: {self.virtual_ip}")
+        
+        # 启动 UDP 消息管理器
+        try:
+            if self.udp_manager:
+                self.udp_manager.stop()
+            
+            self.udp_manager = UDPMessageManager(self.virtual_ip)
+            if self.udp_manager.start():
+                logger.info("UDP消息服务启动成功")
+            else:
+                logger.warning("UDP消息服务启动失败")
+        except Exception as e:
+            logger.error(f"启动UDP消息服务出错: {e}")
         
         return True
     
     def stop(self):
         """停止Easytier服务"""
+        # 先停止 UDP 服务
+        if self.udp_manager:
+            try:
+                self.udp_manager.stop()
+                self.udp_manager = None
+                logger.info("UDP消息服务已停止")
+            except Exception as e:
+                logger.warning(f"停止UDP消息服务出错: {e}")
+                
         import psutil
         
         # 先尝试正常停止进程
@@ -291,10 +369,19 @@ class EasytierManager:
             logger.info(f"Easytier已停止，清理了 {killed_count} 个残留进程")
         else:
             logger.info("Easytier已停止")
+            
+        # 重置状态
+        self.virtual_ip = None
+        self.peer_ips = []
     
     def _get_virtual_ip(self):
         """获取本机虚拟IP（通过easytier-cli查询）"""
         try:
+            # 检查easytier进程是否在运行
+            if not self.process or not ProcessHelper.is_process_running(self.process):
+                logger.info("easytier 进程未运行，无法获取虚拟IP")
+                return "unknown"
+
             # 通过 easytier-cli peer 命令查看本机信息
             if not Config.EASYTIER_CLI.exists():
                 logger.warning(f"easytier-cli 不存在: {Config.EASYTIER_CLI}")
@@ -359,11 +446,16 @@ class EasytierManager:
     def discover_peers(self, timeout=10):
         """
         发现局域网内的对等设备（通过 easytier-cli peer 命令）
-        
+
         Returns:
             list: 对等设备信息列表
         """
         try:
+            # 检查easytier进程是否在运行
+            if not self.process or not ProcessHelper.is_process_running(self.process):
+                logger.info("easytier 进程未运行，跳过设备发现")
+                return []
+
             # 调用 easytier-cli peer 获取peer列表
             if not Config.EASYTIER_CLI.exists():
                 logger.warning(f"easytier-cli 不存在: {Config.EASYTIER_CLI}")
@@ -474,7 +566,7 @@ class EasytierManager:
     def get_traffic_stats(self):
         """
         获取流量统计信息（通过 easytier-cli stats 命令）
-        
+
         Returns:
             dict: 流量统计信息
                 {
@@ -485,6 +577,16 @@ class EasytierManager:
                 }
         """
         try:
+            # 检查easytier进程是否在运行
+            if not self.process or not ProcessHelper.is_process_running(self.process):
+                logger.info("easytier 进程未运行，跳过流量统计")
+                return {
+                    'tx_bytes': 0,
+                    'rx_bytes': 0,
+                    'tx_speed': 0,
+                    'rx_speed': 0
+                }
+
             # 调用 easytier-cli stats 获取流量统计
             if not Config.EASYTIER_CLI.exists():
                 logger.warning(f"easytier-cli 不存在: {Config.EASYTIER_CLI}")

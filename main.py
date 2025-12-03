@@ -56,6 +56,10 @@ _download_progress: Dict[str, DownloadProgress] = {}  # 按版本ID存储进度
 _download_executor = None  # 全局下载线程池
 _minecraft_dir = None  # 用户配置的 Minecraft 目录
 
+# API 缓存（避免重复请求，加快加载速度）
+_loader_versions_cache: Dict[str, Dict] = {}  # key: "loader_type:mc_version"
+_fabric_api_cache: Dict[str, Dict] = {}  # key: mc_version
+
 def get_download_executor():
     """获取下载线程池（延迟初始化）"""
     global _download_executor
@@ -93,6 +97,16 @@ async def lifespan(app: FastAPI):
         pass
 
 app = FastAPI(title=Config.APP_NAME, version=Config.APP_VERSION, lifespan=lifespan)
+
+# 配置 CORS - 允许来自所有域名的请求
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源，生产环境建议替换为具体域名，如 ["http://yourdomain.com", "https://yourdomain.com"]
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有 HTTP 方法
+    allow_headers=["*"],  # 允许所有 HTTP 头
+)
 
 # WebSocket 连接管理
 class ConnectionManager:
@@ -135,6 +149,8 @@ async def broadcast_network_status():
     while True:
         try:
             if len(manager.active_connections) > 0:
+                import json
+
                 # 获取最新的网络状态
                 status = {
                     "type": "status_update",
@@ -144,29 +160,56 @@ async def broadcast_network_status():
                         "virtual_ip": _easytier.virtual_ip or "未连接"
                     }
                 }
-                
+
                 # 在线程池中执行同步操作
                 loop = asyncio.get_event_loop()
-                
+
                 # 获取设备列表（增加超时时间到10秒）
                 peers = await loop.run_in_executor(executor, _easytier.discover_peers, 10)
                 peers_data = {
                     "type": "peers_update",
                     "data": peers
                 }
-                # logger.info(f"获取到 {len(peers)} 个设备: {peers}")  # 已禁用日志
-                
+
                 # 获取流量统计
                 traffic = await loop.run_in_executor(executor, _easytier.get_traffic_stats)
                 traffic_data = {
                     "type": "traffic_update",
                     "data": traffic
                 }
+
+                # 确保所有数据都可以JSON序列化
+                try:
+                    json.dumps(status)
+                    json.dumps(peers_data)
+                    json.dumps(traffic_data)
+                except json.JSONDecodeError as json_e:
+                    logger.error(f"数据无法JSON序列化: {json_e}")
+                    # 只保留状态信息，放弃其他复杂数据
+                    peers_data = {"type": "peers_update", "data": []}
+                    traffic_data = {"type": "traffic_update", "data": {}}
                 
                 # 广播所有数据
-                await manager.broadcast(status)
-                await manager.broadcast(peers_data)
-                await manager.broadcast(traffic_data)
+                try:
+                    await manager.broadcast(status)
+                    await manager.broadcast(peers_data)
+                    await manager.broadcast(traffic_data)
+                except Exception as broadcast_e:
+                    logger.error(f"广播消息时发生JSON序列化或传输错误: {broadcast_e}")
+                    # 过滤掉可能导致序列化失败的数据字段
+                    try:
+                        # 简化数据结构后再次尝试广播
+                        simplified_status = {
+                            "type": "status_update",
+                            "data": {
+                                "running": _easytier.process is not None,
+                                "connected": _easytier.process is not None and ProcessHelper.is_process_running(_easytier.process),
+                                "virtual_ip": _easytier.virtual_ip or "未连接"
+                            }
+                        }
+                        await manager.broadcast(simplified_status)
+                    except Exception as simple_e:
+                        logger.error(f"简化数据后广播仍然失败: {simple_e}")
         except Exception as e:
             logger.error(f"广播网络状态失败: {e}")
             import traceback
@@ -175,36 +218,8 @@ async def broadcast_network_status():
         # 每5秒推送一次
         await asyncio.sleep(5)
 
-def _resolve_web_dir():
-    base_candidates = []
-    # PyInstaller 打包后的临时目录
-    if hasattr(sys, "_MEIPASS"):
-        base_candidates.append(os.path.join(sys._MEIPASS, "web"))
-    # 开发环境 Nuxt 构建产物
-    base_candidates.append(os.path.join(os.getcwd(), "web", "app", ".output", "public"))
-    # 纯HTML占位目录
-    base_candidates.append(os.path.join(os.getcwd(), "web"))
-    for p in base_candidates:
-        if os.path.isdir(p):
-            return p
-    return os.path.join(os.getcwd(), "web")
-
-web_dir = _resolve_web_dir()
-app.mount("/web", StaticFiles(directory=web_dir, html=True), name="web")
-
-@app.get("/web", response_class=HTMLResponse)
-@app.get("/web/", response_class=HTMLResponse)
-def web_spa_entry():
-    index_path = os.path.join(web_dir, "index.html")
-    fallback_path = os.path.join(os.getcwd(), "web", "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    elif os.path.exists(fallback_path):
-        return FileResponse(fallback_path)
-    return HTMLResponse("<h3>前端资源未找到</h3>")
-
 # 简易首页（Web UI 占位）
-# 删除占位首页，改用 /web 提供的 Nuxt SPA
+# 前端页面部署在公共Web控制台，此处仅提供API
 
 # 认证 API
 @app.get("/api/auth/authorize-url")
@@ -729,10 +744,56 @@ def api_mc_list_installed_versions():
         logger.error(f"获取已安装版本列表失败: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+@app.post("/api/minecraft/delete-version")
+async def api_mc_delete_version(request: Dict = Body(...)):
+    """删除已安装的 Minecraft 版本"""
+    import shutil
+    
+    try:
+        version_id = request.get("version_id")
+        
+        if not version_id:
+            return JSONResponse({"ok": False, "error": "缺少版本 ID"}, status_code=400)
+        
+        # 获取用户配置的目录
+        global _minecraft_dir
+        mc_dir = _minecraft_dir
+        
+        if mc_dir is None:
+            from config import Config
+            if not Config.is_configured():
+                return JSONResponse({"ok": False, "error": "未配置 FlowerGame 目录"}, status_code=400)
+            Config.init_dirs()
+            mc_dir = Config.MINECRAFT_DIR
+        
+        # 版本目录路径
+        versions_dir = Path(mc_dir) / "versions" / version_id
+        
+        if not versions_dir.exists():
+            return JSONResponse({"ok": False, "error": f"版本 {version_id} 不存在"}, status_code=404)
+        
+        # 删除版本目录
+        logger.info(f"🗑️ 删除版本: {version_id}, 路径: {versions_dir}")
+        shutil.rmtree(versions_dir)
+        
+        logger.info(f"✅ 版本 {version_id} 删除成功")
+        return JSONResponse({"ok": True, "message": f"版本 {version_id} 已删除"})
+        
+    except Exception as e:
+        logger.error(f"删除版本失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
 @app.get("/api/minecraft/loader-versions")
 def api_mc_get_loader_versions(loader_type: str, mc_version: str):
     """获取加载器版本列表"""
     try:
+        # 检查缓存
+        cache_key = f"{loader_type}:{mc_version}"
+        if cache_key in _loader_versions_cache:
+            cached_data = _loader_versions_cache[cache_key]
+            logger.info(f"✨ 使用缓存的加载器版本: {cache_key}")
+            return JSONResponse(cached_data)
+        
         # 转换加载器类型
         loader_type_map = {
             "fabric": LoaderType.FABRIC,
@@ -753,16 +814,99 @@ def api_mc_get_loader_versions(loader_type: str, mc_version: str):
             if versions is None:
                 return JSONResponse({"ok": False, "error": "获取加载器版本失败"}, status_code=500)
             
-            return JSONResponse({
+            result = {
                 "ok": True,
                 "versions": versions,
                 "total": len(versions)
-            })
+            }
+            
+            # 缓存结果
+            _loader_versions_cache[cache_key] = result
+            logger.info(f"💾 已缓存加载器版本: {cache_key}, 数量: {len(versions)}")
+            
+            return JSONResponse(result)
         finally:
             temp_manager.close()
     except Exception as e:
         logger.error(f"获取加载器版本失败: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.get("/api/minecraft/fabric-api-versions")
+def api_mc_get_fabric_api_versions(mc_version: str):
+    """获取 Fabric API 版本列表"""
+    try:
+        # 检查缓存
+        if mc_version in _fabric_api_cache:
+            cached_data = _fabric_api_cache[mc_version]
+            logger.info(f"✨ 使用缓存的 Fabric API 版本: {mc_version}")
+            return JSONResponse(cached_data)
+        
+        import httpx
+        from utils.httpx import get_session
+        
+        # 使用 Modrinth API 获取 Fabric API 版本
+        # Fabric API 的 Modrinth 项目 ID
+        fabric_api_id = "P7dR8mSH"  # Fabric API 在 Modrinth 上的 ID
+        
+        client = get_session()
+        
+        # 直接获取所有版本，然后手动过滤
+        url = f"https://api.modrinth.com/v2/project/{fabric_api_id}/version"
+        
+        logger.info(f"请求 Fabric API 版本: mc_version={mc_version}")
+        
+        response = client.get(url, timeout=10.0)
+        
+        logger.info(f"Modrinth API 响应状态: {response.status_code}")
+        
+        if response.status_code != 200:
+            logger.warning(f"获取 Fabric API 版本失败: {response.status_code}")
+            return JSONResponse({"ok": True, "versions": [], "total": 0})
+        
+        all_versions = response.json()
+        logger.info(f"获取到 {len(all_versions)} 个 Fabric API 版本")
+        
+        # 手动过滤出包含当前 MC 版本的版本
+        versions_data = []
+        for version in all_versions:
+            game_versions = version.get("game_versions", [])
+            loaders = version.get("loaders", [])
+            # 检查是否支持当前 MC 版本和 Fabric 加载器
+            if mc_version in game_versions and "fabric" in loaders:
+                versions_data.append(version)
+                if len(versions_data) >= 20:  # 限制最多20个版本
+                    break
+        
+        logger.info(f"过滤后得到 {len(versions_data)} 个版本")
+        
+        # 提取版本信息
+        versions = []
+        for version in versions_data:
+            versions.append({
+                "version": version.get("version_number", ""),
+                "name": version.get("name", ""),
+                "game_version": mc_version,
+                "downloads": version.get("downloads", 0),
+                "date_published": version.get("date_published", "")
+            })
+        
+        logger.info(f"返回 {len(versions)} 个 Fabric API 版本")
+        
+        result = {
+            "ok": True,
+            "versions": versions,
+            "total": len(versions)
+        }
+        
+        # 缓存结果
+        _fabric_api_cache[mc_version] = result
+        logger.info(f"💾 已缓存 Fabric API 版本: {mc_version}, 数量: {len(versions)}")
+        
+        return JSONResponse(result)
+    except Exception as e:
+        logger.error(f"获取 Fabric API 版本失败: {e}", exc_info=True)
+        # 返回空列表而不是错误，因为 Fabric API 是可选的
+        return JSONResponse({"ok": True, "versions": [], "total": 0})
 
 @app.post("/api/minecraft/download")
 async def api_mc_download_vanilla(request: Dict = Body(...)):
@@ -850,12 +994,14 @@ async def api_mc_download_with_loader(request: Dict = Body(...)):
         loader_type = request.get('loader_type') or ''
         loader_version = request.get('loader_version') or ''
         custom_name = request.get('custom_name')
+        fabric_api_version = request.get('fabric_api_version')
         
         # 安全地处理字符串
         mc_version = mc_version.strip() if mc_version else ''
         loader_type = loader_type.strip() if loader_type else ''
         loader_version = loader_version.strip() if loader_version else ''
         custom_name = custom_name.strip() if custom_name else None
+        fabric_api_version = fabric_api_version.strip() if fabric_api_version else None
         
         if not all([mc_version, loader_type, loader_version]):
             return JSONResponse({"ok": False, "error": "参数不完整"}, status_code=400)
@@ -890,7 +1036,7 @@ async def api_mc_download_with_loader(request: Dict = Body(...)):
             )
             try:
                 success = manager.download_with_loader(
-                    mc_version, loader, loader_version, custom_name
+                    mc_version, loader, loader_version, custom_name, fabric_api_version
                 )
                 return success
             finally:
@@ -1047,18 +1193,277 @@ WebSocket 连接端点，用于实时推送网络状态、设备列表和流量�
             }
         }
         await websocket.send_json(initial_status)
-        
+
         # 保持连接，等待客户端断开
         while True:
-            # 接收客户端消息（如果有）
-            data = await websocket.receive_text()
-            # 可以处理客户端发送的消息
+            try:
+                # 接收客户端消息（如果有），设置超时防止无限等待
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # 可以处理客户端发送的消息
+            except asyncio.TimeoutError:
+                # 发送心跳保持连接
+                await websocket.send_json({"type": "heartbeat"})
     except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except (ConnectionResetError, BrokenPipeError, EOFError):
+        # 处理客户端断开连接错误
+        logger.debug("WebSocket 客户端已断开连接")
         manager.disconnect(websocket)
     except Exception as e:
         logger.error(f"WebSocket 错误: {e}")
         manager.disconnect(websocket)
 
+
+# ==================== 联机房间 API ====================
+
+from service.minecraft.online_lobby import NBTModifier, room_manager, LANPublishService, PublishConfig
+
+# 全局联机服务实例
+_lan_service: LANPublishService = None
+
+def get_lan_service() -> LANPublishService:
+    """获取联机服务（延迟初始化）"""
+    global _lan_service, _minecraft_dir
+    if _lan_service is None and _minecraft_dir:
+        _lan_service = LANPublishService(minecraft_dir=_minecraft_dir)
+    return _lan_service
+
+@app.get("/api/room/check-port")
+def api_room_check_port(port: int):
+    """检查端口是否被占用
+    
+    Args:
+        port: 要检查的端口号
+        
+    Returns:
+        {ok: bool, available: bool, message: str}
+    """
+    import socket
+    
+    if port < 1024 or port > 65535:
+        return {"ok": False, "error": "端口号必须在 1024-65535 之间"}
+    
+    try:
+        # 尝试绑定端口
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(('127.0.0.1', port))
+        sock.close()
+        
+        if result == 0:
+            # 端口被占用
+            return {"ok": True, "available": False, "message": f"端口 {port} 已被占用"}
+        else:
+            # 端口可用
+            return {"ok": True, "available": True, "message": f"端口 {port} 可用"}
+    except Exception as e:
+        return {"ok": True, "available": True, "message": f"端口 {port} 可用"}
+
+
+@app.get("/api/room/saves")
+def api_room_list_saves(version_id: str = None):
+    """获取存档列表
+    
+    Args:
+        version_id: 版本ID，用于版本隔离模式下定位存档目录
+                   例如: 1.21.10-Forge_60.1.0
+                   存档路径: .minecraft/versions/{version_id}/saves
+    """
+    try:
+        global _minecraft_dir
+        mc_dir = _minecraft_dir
+        
+        if mc_dir is None:
+            from config import Config
+            if not Config.is_configured():
+                return JSONResponse({"ok": False, "error": "未配置 FlowerGame 目录"}, status_code=400)
+            Config.init_dirs()
+            mc_dir = Config.MINECRAFT_DIR
+        
+        # 构建存档目录路径
+        # 版本隔离模式: .minecraft/versions/{version_id}/saves
+        # 非版本隔离模式: .minecraft/saves
+        if version_id:
+            saves_dir = Path(mc_dir) / "versions" / version_id / "saves"
+            logger.info(f"📂 版本隔离模式 - 存档目录: {saves_dir}")
+        else:
+            saves_dir = Path(mc_dir) / "saves"
+            logger.info(f"📂 标准模式 - 存档目录: {saves_dir}")
+        
+        modifier = NBTModifier(minecraft_dir=mc_dir, saves_dir=saves_dir)
+        saves = modifier.get_saves_list()
+        
+        return JSONResponse({
+            "ok": True,
+            "saves": saves,
+            "saves_dir": str(saves_dir)
+        })
+    except Exception as e:
+        logger.error(f"获取存档列表失败: {e}", exc_info=True)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.post("/api/room/create")
+async def api_room_create(request: Dict = Body(...)):
+    """创建联机房间"""
+    try:
+        # 获取参数（处理 None 值）
+        room_name = (request.get('room_name') or '').strip()
+        save_name = (request.get('save_name') or '').strip()
+        port = request.get('port') or 25565
+        password = (request.get('password') or '').strip() or None
+        game_mode = request.get('game_mode') or 'survival'
+        
+        # 账号信息
+        username = request.get('username') or 'Player'
+        uuid = request.get('uuid') or ''
+        access_token = request.get('access_token') or ''
+        
+        # 版本信息
+        version_id = (request.get('version_id') or '').strip()
+        
+        # JVM参数
+        jvm_args = request.get('jvm_args', [])
+        
+        if not room_name:
+            return JSONResponse({"ok": False, "error": "房间名称不能为空"}, status_code=400)
+        if not save_name:
+            return JSONResponse({"ok": False, "error": "请选择存档"}, status_code=400)
+        if not version_id:
+            return JSONResponse({"ok": False, "error": "请选择游戏版本"}, status_code=400)
+        
+        global _minecraft_dir
+        mc_dir = _minecraft_dir
+        
+        if mc_dir is None:
+            from config import Config
+            if not Config.is_configured():
+                return JSONResponse({"ok": False, "error": "未配置 FlowerGame 目录"}, status_code=400)
+            Config.init_dirs()
+            mc_dir = Config.MINECRAFT_DIR
+        
+        # 1. 修改存档开启作弊
+        # 版本隔离模式：存档在 versions/{version_id}/saves 目录下
+        saves_dir = Path(mc_dir) / "versions" / version_id / "saves"
+        logger.info(f"🔧 为存档 {save_name} 开启作弊... (存档目录: {saves_dir})")
+        modifier = NBTModifier(minecraft_dir=mc_dir, saves_dir=saves_dir)
+        success, msg = modifier.enable_commands(save_name)
+        if not success:
+            return JSONResponse({"ok": False, "error": f"修改存档失败: {msg}"}, status_code=500)
+        
+        # 2. 获取虚拟IP
+        virtual_ip = _easytier.virtual_ip or ""
+        
+        # 3. 创建房间
+        room = room_manager.create_room(
+            name=room_name,
+            save_name=save_name,
+            port=port,
+            host_player=username,
+            password=password,
+            game_mode=game_mode,
+            virtual_ip=virtual_ip
+        )
+        
+        # 4. 启动游戏并发布局域网
+        lan_service = get_lan_service()
+        if not lan_service:
+            lan_service = LANPublishService(minecraft_dir=mc_dir)
+        
+        def on_game_started(pid: int):
+            room_manager.set_room_process(room.room_id, pid)
+            room_manager.update_room_status(room.room_id, 'waiting')
+            # 启动进程监控，游戏退出时自动关闭房间
+            room_manager.start_process_monitor(room.room_id, pid)
+            logger.info(f"🎮 游戏已启动，PID: {pid}")
+        
+        def on_publish_success():
+            room_manager.update_room_status(room.room_id, 'open')
+            logger.info(f"✅ 房间 {room_name} 已开放！")
+        
+        def on_error(error_msg: str):
+            room_manager.update_room_status(room.room_id, 'error', error_msg)
+            logger.error(f"❌ 房间创建失败: {error_msg}")
+        
+        room_manager.update_room_status(room.room_id, 'creating')
+        
+        lan_service.start_and_publish(
+            version_id=version_id,
+            save_name=save_name,
+            username=username,
+            port=port,
+            game_mode=game_mode,
+            uuid=uuid,
+            access_token=access_token,
+            jvm_args=jvm_args,
+            on_game_started=on_game_started,
+            on_publish_success=on_publish_success,
+            on_error=on_error
+        )
+        
+        return JSONResponse({
+            "ok": True,
+            "message": "房间创建中...",
+            "room": room.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"创建房间失败: {e}", exc_info=True)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.get("/api/room/current")
+def api_room_get_current():
+    """获取当前房间状态"""
+    try:
+        room = room_manager.get_current_room()
+        if room:
+            return JSONResponse({
+                "ok": True,
+                "room": room.to_dict()
+            })
+        return JSONResponse({
+            "ok": True,
+            "room": None
+        })
+    except Exception as e:
+        logger.error(f"获取当前房间失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.get("/api/room/list")
+def api_room_list_all():
+    """获取所有房间列表"""
+    try:
+        rooms = room_manager.get_all_rooms()
+        return JSONResponse({
+            "ok": True,
+            "rooms": rooms
+        })
+    except Exception as e:
+        logger.error(f"获取房间列表失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.post("/api/room/close")
+def api_room_close(request: Dict = Body(...)):
+    """关闭房间"""
+    try:
+        room_id = request.get('room_id', '')
+        
+        if not room_id:
+            # 关闭当前房间
+            room = room_manager.get_current_room()
+            if room:
+                room_id = room.room_id
+            else:
+                return JSONResponse({"ok": False, "error": "没有活动的房间"}, status_code=400)
+        
+        room_manager.close_room(room_id)
+        
+        return JSONResponse({
+            "ok": True,
+            "message": "房间已关闭"
+        })
+    except Exception as e:
+        logger.error(f"关闭房间失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 # 删除 GUI/浏览器打开逻辑，保留命令行启动
 
@@ -1066,11 +1471,19 @@ WebSocket 连接端点，用于实时推送网络状态、设备列表和流量�
 
 def run_web_server():
     ProcessHelper.kill_by_port(Config.WEB_PORT)
-    uvicorn.run(app, host=Config.WEB_HOST, port=Config.WEB_PORT, log_level="info")
+    uvicorn.run(
+        app,
+        host=Config.WEB_HOST,
+        port=Config.WEB_PORT,
+        log_level="info",
+        access_log=False  # 禁用访问日志
+    )
 
 
 def open_browser():
-    url = f"http://{Config.WEB_HOST}:{Config.WEB_PORT}/web"
+    # 打开公共Web控制台
+    url = Config.WEB_CONSOLE_URL
+    logger.info(f"正在打开Web控制台: {url}")
     try:
         webbrowser.open(url)
     except Exception:
@@ -1079,69 +1492,222 @@ def open_browser():
 
 def start_gui():
     import tkinter as tk
+    from tkinter import ttk
+    import sys
+    import ctypes
+    
+    # 设置 DPI 感知
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
     root = tk.Tk()
-    root.title(f"{Config.APP_NAME} 控制面板")
-    label = tk.Label(root, text="Web 服务已启动，点击按钮在浏览器中配置")
-    label.pack(padx=16, pady=12)
-    btn = tk.Button(root, text="打开浏览器", command=open_browser)
-    btn.pack(padx=16, pady=8)
+    
+    # 去除原生标题栏
+    root.overrideredirect(True)
+    
+    root.title(f"{Config.APP_NAME}")
+    root.geometry("400x280")
+    root.configure(bg="#0f172a")  # 深蓝色背景
+    
+    # 居中窗口
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = (screen_width - 400) // 2
+    y = (screen_height - 280) // 2
+    root.geometry(f"400x280+{x}+{y}")
+
+    # 实现窗口拖拽
+    def start_move(event):
+        root.x = event.x
+        root.y = event.y
+
+    def stop_move(event):
+        root.x = None
+        root.y = None
+
+    def do_move(event):
+        deltax = event.x - root.x
+        deltay = event.y - root.y
+        x = root.winfo_x() + deltax
+        y = root.winfo_y() + deltay
+        root.geometry(f"+{x}+{y}")
+
+    # 顶部标题栏区域 (用于拖拽)
+    title_bar = tk.Frame(root, bg="#0f172a", height=30)
+    title_bar.pack(fill="x", side="top")
+    
+    # 绑定拖拽事件到整个窗口和标题栏
+    root.bind("<ButtonPress-1>", start_move)
+    root.bind("<ButtonRelease-1>", stop_move)
+    root.bind("<B1-Motion>", do_move)
+    title_bar.bind("<ButtonPress-1>", start_move)
+    title_bar.bind("<ButtonRelease-1>", stop_move)
+    title_bar.bind("<B1-Motion>", do_move)
+
+    # 自定义关闭按钮
+    def close_window():
+        root.destroy()
+        sys.exit(0)
+        
+    def on_close_enter(e):
+        e.widget['background'] = '#ef4444'  # 红色
+        e.widget['foreground'] = 'white'
+
+    def on_close_leave(e):
+        e.widget['background'] = '#0f172a'  # 背景色
+        e.widget['foreground'] = '#94a3b8'
+
+    close_btn = tk.Button(
+        title_bar,
+        text="✕",
+        command=close_window,
+        font=("Segoe UI", 10),
+        bg="#0f172a",
+        fg="#94a3b8",
+        bd=0,
+        relief="flat",
+        activebackground="#ef4444",
+        activeforeground="white",
+        width=4
+    )
+    close_btn.pack(side="right", padx=0, pady=0, fill="y")
+    
+    close_btn.bind("<Enter>", on_close_enter)
+    close_btn.bind("<Leave>", on_close_leave)
+
+    # 内容区域
+    content_frame = tk.Frame(root, bg="#0f172a")
+    content_frame.pack(expand=True, fill="both")
+    
+    # 绑定内容区域的拖拽
+    content_frame.bind("<ButtonPress-1>", start_move)
+    content_frame.bind("<ButtonRelease-1>", stop_move)
+    content_frame.bind("<B1-Motion>", do_move)
+
+    # 标题样式
+    title_label = tk.Label(
+        content_frame, 
+        text="🌸 FlowerGame", 
+        font=("Segoe UI", 24, "bold"),
+        bg="#0f172a",
+        fg="#f1f5f9"  # 浅色文字
+    )
+    title_label.pack(pady=(20, 10))
+    
+    # 绑定标题拖拽
+    title_label.bind("<ButtonPress-1>", start_move)
+    title_label.bind("<ButtonRelease-1>", stop_move)
+    title_label.bind("<B1-Motion>", do_move)
+
+    # 副标题/状态样式
+    status_label = tk.Label(
+        content_frame, 
+        text="服务正在运行中...", 
+        font=("Segoe UI", 10),
+        bg="#0f172a",
+        fg="#94a3b8"  # 灰色文字
+    )
+    status_label.pack(pady=(0, 30))
+    
+    # 绑定状态标签拖拽
+    status_label.bind("<ButtonPress-1>", start_move)
+    status_label.bind("<ButtonRelease-1>", stop_move)
+    status_label.bind("<B1-Motion>", do_move)
+
+    # 按钮样式
+    def on_enter(e):
+        e.widget['background'] = '#4ade80'  # 悬停颜色 (更亮的绿色)
+
+    def on_leave(e):
+        e.widget['background'] = '#22c55e'  # 默认颜色 (绿色)
+
+    btn = tk.Button(
+        content_frame, 
+        text="打开控制台", 
+        command=open_browser,
+        font=("Segoe UI", 12, "bold"),
+        bg="#22c55e",        # 绿色背景
+        fg="white",          # 白色文字
+        activebackground="#16a34a", # 点击颜色 (深绿色)
+        activeforeground="white",
+        relief="flat",       # 扁平化
+        bd=0,
+        cursor="hand2",
+        width=16,
+        height=2
+    )
+    btn.pack(pady=10)
+    
+    # 绑定悬停效果
+    btn.bind("<Enter>", on_enter)
+    btn.bind("<Leave>", on_leave)
+
+    # 底部版本信息
+    version_label = tk.Label(
+        content_frame, 
+        text="v1.0.0", 
+        font=("Segoe UI", 9),
+        bg="#0f172a",
+        fg="#64748b"  # 深灰色文字
+    )
+    version_label.pack(side="bottom", pady=15)
+    
+    # 绑定版本标签拖拽
+    version_label.bind("<ButtonPress-1>", start_move)
+    version_label.bind("<ButtonRelease-1>", stop_move)
+    version_label.bind("<B1-Motion>", do_move)
+
     root.mainloop()
 
 
 if __name__ == "__main__":
+    # ==================== 权限检查 ====================
+    import ctypes
+    try:
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        is_admin = False
+        
+    if not is_admin:
+        # 尝试重新以管理员身份运行
+        # logger.info("正在请求管理员权限...") # 此时 logger 可能还没初始化
+        import sys
+        import subprocess
+        
+        # 如果是打包后的 exe
+        if getattr(sys, 'frozen', False):
+            # 使用 ShellExecute 显式请求 runas
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv[1:]), None, 1)
+        else:
+            # 如果是脚本运行
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
+        
+        sys.exit(0)
+    
     # ==================== 首次启动检查 ====================
+    # 在权限检查之后再导入 Config，确保日志文件能正确创建（如果有权限问题）
     from config import Config
     
     if not Config.is_configured():
-        # 首次启动，弹窗让用户选择目录
-        import tkinter as tk
-        from tkinter import filedialog, messagebox
+        # 使用美化后的设置窗口
+        from ui.setup_window import SetupWindow, show_success_dialog
         
-        root = tk.Tk()
-        root.withdraw()  # 隐藏主窗口
+        setup = SetupWindow()
+        selected_path = setup.run()
         
-        # 显示欢迎消息
-        messagebox.showinfo(
-            "FlowerGame - 首次启动",
-            "欢迎使用 FlowerGame\uff01\n\n"
-            "请选择一个目录来存储游戏文件。\n"
-            "程序将在该目录下创建 'FlowerGame' 文件夹。\n\n"
-            "建议选择空间充足的位置，如 D:\\ 或桌面。"
-        )
-        
-        # 让用户选择目录
-        selected_dir = filedialog.askdirectory(
-            title="选择 FlowerGame 安装目录",
-            initialdir=str(Path.home() / "Desktop")  # 默认打开桌面
-        )
-        
-        if not selected_dir:
-            messagebox.showerror(
-                "错误",
-                "未选择目录，程序将退出。"
-            )
-            sys.exit(1)
-        
-        # 创建 FlowerGame 目录
-        main_dir = Path(selected_dir) / "FlowerGame"
-        main_dir.mkdir(parents=True, exist_ok=True)
-        
+        if not selected_path:
+            sys.exit(0)  # 用户关闭窗口
+            
         # 保存配置
-        if Config.set_main_dir(main_dir):
-            messagebox.showinfo(
-                "成功",
-                f"配置成功！\n\n"
-                f"游戏文件将存储在：\n{main_dir}\n\n"
-                f"现在将启动 FlowerGame..."
-            )
+        if Config.set_main_dir(selected_path):
+            show_success_dialog(selected_path)
         else:
-            messagebox.showerror(
-                "错误",
-                "配置保存失败，请检查权限后重试。"
-            )
+            # 失败回退到简单弹窗
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("错误", "配置保存失败，请检查权限后重试。")
             sys.exit(1)
-        
-        root.destroy()
     
     # ==================== 初始化目录 ====================
     if not Config.init_dirs():

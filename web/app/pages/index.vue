@@ -73,7 +73,8 @@
             <button 
               @click="connectNetwork" 
               class="qq-btn qq-btn-primary" 
-              :disabled="networkStatus.connected || isConnecting"
+              :disabled="networkStatus.connected || isConnecting || nodeList.length === 0"
+              :title="nodeList.length === 0 ? '请先添加节点' : ''"
             >
               {{ isConnecting ? '连接中...' : (networkStatus.connected ? '已连接' : '连接房间') }}
             </button>
@@ -176,8 +177,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useToast } from '../composables/useToast'
+import { useBackend } from '../composables/useBackend'
 
 const { showToast } = useToast()
+const { fetchApi, getWsUrl } = useBackend()
 
 const networkStatus = ref({
   running: false,
@@ -213,9 +217,15 @@ async function connectNetwork() {
     return
   }
 
+  // 再次检查节点（防止绕过 UI）
+  if (nodeList.value.length === 0) {
+    showToast('请至少添加一个节点', 'error')
+    return
+  }
+
   isConnecting.value = true
   try {
-    const r = await fetch('/api/easytier/start', {
+    const r = await fetchApi('/api/easytier/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -242,13 +252,22 @@ async function connectNetwork() {
 async function disconnectNetwork() {
   isDisconnecting.value = true
   try {
-    const r = await fetch('/api/easytier/stop', { method: 'POST' })
+    const r = await fetchApi('/api/easytier/stop', { method: 'POST' })
     const result = await r.json()
     
     if (result.ok) {
       networkStatus.value.connected = false
       networkStatus.value.virtual_ip = '未连接'
       peers.value = []
+      
+      // 广播状态更新给 App.vue (进而更新 Sidebar)
+      if (typeof window !== 'undefined') {
+        const event = new CustomEvent('easytier-update', { 
+          detail: networkStatus.value 
+        })
+        window.dispatchEvent(event)
+      }
+      
       showToast('已断开连接', 'info')
       stopStatusPolling()
     } else {
@@ -263,7 +282,7 @@ async function disconnectNetwork() {
 
 async function loadNodes() {
   try {
-    const r = await fetch('/api/easytier/nodes')
+    const r = await fetchApi('/api/easytier/nodes')
     const result = await r.json()
     if (Array.isArray(result.nodes)) {
       nodeList.value = result.nodes
@@ -280,7 +299,7 @@ async function addNode() {
   }
 
   try {
-    const r = await fetch('/api/easytier/nodes/add', {
+    const r = await fetchApi('/api/easytier/nodes/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ node: newNodeAddress.value.trim() })
@@ -301,7 +320,7 @@ async function addNode() {
 
 async function removeNode(node: string) {
   try {
-    const r = await fetch('/api/easytier/nodes/remove', {
+    const r = await fetchApi('/api/easytier/nodes/remove', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ node })
@@ -319,45 +338,96 @@ async function removeNode(node: string) {
   }
 }
 
-async function updateStatus() {
+let websocket: WebSocket | null = null
+
+// 初始化WebSocket连接
+function initWebSocket() {
+  if (websocket) return
+
   try {
-    const r = await fetch('/api/easytier/status')
-    const result = await r.json()
-    networkStatus.value = {
-      running: result.running || false,
-      connected: result.connected || false,
-      virtual_ip: result.virtual_ip || '未连接'
+    // 使用动态获取的 WebSocket URL
+    const wsUrl = getWsUrl('/ws/easytier')
+    
+    console.log(`尝试连接 WebSocket: ${wsUrl}`)
+    websocket = new WebSocket(wsUrl)
+
+    websocket.onopen = () => {
+      console.log('WebSocket连接已建立')
     }
 
-    const r2 = await fetch('/api/easytier/peers')
-    const peers_result = await r2.json()
-    if (Array.isArray(peers_result)) {
-      peers.value = peers_result
+    websocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        // console.log('WebSocket数据:', data)
+
+        switch (data.type) {
+          case 'status_update':
+            networkStatus.value = {
+              running: data.data.running || false,
+              connected: data.data.connected || false,
+              virtual_ip: data.data.virtual_ip || '未连接'
+            }
+            
+            // 广播状态更新给 App.vue (进而更新 Sidebar)
+            if (typeof window !== 'undefined') {
+              const event = new CustomEvent('easytier-update', { 
+                detail: networkStatus.value 
+              })
+              window.dispatchEvent(event)
+            }
+            break
+          case 'peers_update':
+            if (Array.isArray(data.data)) {
+              peers.value = data.data
+            }
+            break
+          case 'traffic_update':
+            trafficStats.value = {
+              tx_bytes: data.data.tx_bytes || 0,
+              rx_bytes: data.data.rx_bytes || 0,
+              tx_speed: data.data.tx_speed || 0,
+              rx_speed: data.data.rx_speed || 0
+            }
+            break
+        }
+      } catch (e) {
+        console.error('WebSocket消息解析失败:', e)
+      }
     }
 
-    const r3 = await fetch('/api/easytier/traffic')
-    const traffic_result = await r3.json()
-    trafficStats.value = {
-      tx_bytes: traffic_result.tx_bytes || 0,
-      rx_bytes: traffic_result.rx_bytes || 0,
-      tx_speed: traffic_result.tx_speed || 0,
-      rx_speed: traffic_result.rx_speed || 0
+    websocket.onerror = (error) => {
+      console.error('WebSocket错误:', error)
     }
-  } catch (e: any) {
-    console.error('更新状态失败:', e)
+
+    websocket.onclose = () => {
+      console.log('WebSocket连接已关闭')
+      websocket = null
+      // 1秒后尝试重连
+      setTimeout(initWebSocket, 1000)
+    }
+  } catch (e) {
+    console.error('初始化WebSocket失败:', e)
+    // 1秒后尝试重连
+    setTimeout(initWebSocket, 1000)
+  }
+}
+
+// 关闭WebSocket连接
+function closeWebSocket() {
+  if (websocket) {
+    websocket.close()
+    websocket = null
   }
 }
 
 function startStatusPolling() {
-  if (statusTimer) return
-  statusTimer = setInterval(updateStatus, 2000)
+  // 使用WebSocket替代轮询
+  initWebSocket()
 }
 
 function stopStatusPolling() {
-  if (statusTimer) {
-    clearInterval(statusTimer)
-    statusTimer = null
-  }
+  // 关闭WebSocket连接
+  closeWebSocket()
 }
 
 function formatBytes(bytes: number): string {
@@ -386,7 +456,7 @@ function getLatencyIcon(latency: number): string {
 
 onMounted(() => {
   loadNodes()
-  updateStatus()
+  // updateStatus() - 已替换为WebSocket，会自动获取初始状态
   startStatusPolling()
 })
 
@@ -396,6 +466,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* ==================== 深色主题网络管理页面样式 ==================== */
 .network-page {
   width: 100%;
 }
@@ -408,10 +479,11 @@ onUnmounted(() => {
 }
 
 .panel-section {
-  background: white;
-  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(10px);
 }
 
 .panel-half {
@@ -420,11 +492,11 @@ onUnmounted(() => {
 
 .section-title {
   font-size: 18px;
-  font-weight: 600;
-  color: #333;
+  font-weight: 700;
+  color: #f1f5f9;
   margin: 0 0 20px 0;
-  padding-bottom: 12px;
-  border-bottom: 2px solid #4a90e2;
+  padding-bottom: 14px;
+  border-bottom: 2px solid #22c55e;
 }
 
 .section-header {
@@ -439,14 +511,15 @@ onUnmounted(() => {
   align-items: center;
   gap: 20px;
   padding: 24px;
-  background: #f8f9fa;
-  border-radius: 12px;
-  border: 2px solid #e8e8e8;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 14px;
+  transition: all 0.2s ease;
 }
 
 .status-card.connected {
-  background: linear-gradient(135deg, #d4f4dd 0%, #e8f8ec 100%);
-  border-color: #52c41a;
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
 }
 
 .status-icon {
@@ -455,9 +528,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: white;
+  background: rgba(15, 23, 42, 0.6);
   border-radius: 50%;
-  font-size: 32px;
+  font-size: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.status-card.connected .status-icon {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.3);
 }
 
 .status-info {
@@ -466,45 +545,55 @@ onUnmounted(() => {
 
 .status-label {
   font-size: 18px;
-  font-weight: 600;
-  color: #2c3e50;
+  font-weight: 700;
+  color: #f1f5f9;
   margin-bottom: 8px;
+}
+
+.status-card.connected .status-label {
+  color: #4ade80;
 }
 
 .status-ip {
   font-size: 14px;
-  color: #606266;
+  color: #94a3b8;
 }
 
 .node-list-compact {
   padding: 16px;
-  background: #f8f9fa;
-  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  border-radius: 10px;
   margin-bottom: 16px;
 }
 
 .empty-state-small {
   text-align: center;
-  color: #909399;
+  color: #64748b;
   font-size: 14px;
 }
 
 .node-count {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .count-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: #4a90e2;
+  width: 34px;
+  height: 34px;
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
   color: white;
   border-radius: 50%;
   font-weight: 700;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+}
+
+.count-text {
+  color: #94a3b8;
 }
 
 .quick-actions {
@@ -529,7 +618,7 @@ onUnmounted(() => {
   gap: 8px;
   font-size: 14px;
   font-weight: 600;
-  color: #2c3e50;
+  color: #e2e8f0;
 }
 
 .label-icon {
@@ -546,8 +635,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 20px;
   padding: 20px;
-  background: #f8f9fa;
-  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  border-radius: 14px;
 }
 
 .traffic-item {
@@ -566,26 +656,29 @@ onUnmounted(() => {
 }
 
 .traffic-label {
-  font-size: 14px;
-  color: #909399;
+  font-size: 13px;
+  color: #64748b;
   margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .traffic-value {
   font-size: 20px;
   font-weight: 700;
-  color: #2c3e50;
+  color: #f1f5f9;
 }
 
 .traffic-speed {
   font-size: 13px;
-  color: #606266;
+  color: #94a3b8;
 }
 
 .traffic-divider {
   width: 2px;
   height: 60px;
-  background: #e8e8e8;
+  background: rgba(148, 163, 184, 0.15);
+  border-radius: 1px;
 }
 
 .device-list {
@@ -599,46 +692,52 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 16px;
-  background: #f8f9fa;
-  border-radius: 8px;
-  border: 2px solid #e8e8e8;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+
+.device-item:hover {
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .device-info {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
 }
 
 .device-icon {
-  width: 64px;
-  height: 64px;
+  width: 56px;
+  height: 56px;
   object-fit: contain;
 }
 
 .device-name {
   font-size: 16px;
-  font-weight: 600;
-  color: #2c3e50;
+  font-weight: 700;
+  color: #f1f5f9;
   margin-bottom: 4px;
 }
 
 .device-ip {
   font-size: 14px;
-  color: #606266;
+  color: #94a3b8;
+  font-family: 'Consolas', monospace;
 }
 
 .device-latency {
   font-size: 14px;
   font-weight: 600;
-  color: #52c41a;
+  color: #4ade80;
 }
 
 .empty-state {
   text-align: center;
   padding: 40px;
-  color: #909399;
+  color: #64748b;
 }
 
 .modal-overlay {
@@ -647,7 +746,8 @@ onUnmounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -655,12 +755,14 @@ onUnmounted(() => {
 }
 
 .modal-content {
-  background: white;
-  border-radius: 16px;
+  background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 20px;
   max-width: 600px;
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
 }
 
 .modal-header {
@@ -668,14 +770,32 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 24px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.modal-header h3 {
+  color: #f1f5f9;
+  font-weight: 700;
 }
 
 .modal-close {
-  background: none;
+  width: 36px;
+  height: 36px;
+  background: rgba(148, 163, 184, 0.1);
   border: none;
-  font-size: 28px;
+  border-radius: 10px;
+  font-size: 20px;
   cursor: pointer;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.modal-close:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
 }
 
 .modal-body {
@@ -690,10 +810,16 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px;
-  background: #f8f9fa;
-  border-radius: 8px;
-  margin-bottom: 8px;
+  padding: 14px 16px;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  border-radius: 10px;
+  margin-bottom: 10px;
+  transition: all 0.2s ease;
+}
+
+.node-item:hover {
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .node-content {
@@ -709,7 +835,8 @@ onUnmounted(() => {
 
 .node-address {
   font-size: 14px;
-  color: #2c3e50;
+  color: #e2e8f0;
+  font-family: 'Consolas', monospace;
 }
 
 .add-node-form {
@@ -720,45 +847,69 @@ onUnmounted(() => {
 
 .qq-input {
   flex: 1;
-  padding: 12px 16px;
-  border: 2px solid #e8e8e8;
-  border-radius: 8px;
+  padding: 14px 18px;
+  border: 2px solid rgba(148, 163, 184, 0.15);
+  border-radius: 10px;
   font-size: 14px;
   font-family: inherit;
+  background: rgba(15, 23, 42, 0.6);
+  color: #f1f5f9;
+  transition: all 0.2s ease;
+}
+
+.qq-input::placeholder {
+  color: #64748b;
 }
 
 .qq-input:focus {
   outline: none;
-  border-color: #4a90e2;
+  border-color: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
 }
 
 .qq-btn {
   border: none;
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 14px;
-  padding: 0 20px;
-  height: 40px;
+  padding: 0 22px;
+  height: 44px;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: all 0.2s ease;
   font-family: inherit;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+}
+
+.qq-btn:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
 }
 
 .qq-btn-primary {
-  background: #4a90e2;
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
   color: white;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
 }
 
-.qq-btn-primary:hover {
-  background: #357abd;
+.qq-btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(34, 197, 94, 0.4);
 }
 
 .qq-btn-danger {
-  background: #f56c6c;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
   color: white;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.qq-btn-danger:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
 }
 
 .qq-btn-small {
-  height: 32px;
+  height: 36px;
   padding: 0 16px;
   font-size: 13px;
 }
@@ -768,7 +919,8 @@ onUnmounted(() => {
 }
 
 .qq-btn:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
+  transform: none !important;
 }
 </style>
