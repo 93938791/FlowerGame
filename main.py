@@ -603,6 +603,20 @@ def api_et_save_config(config: Dict):
     # 注意：这里只是临时保存，不持久化到文件
     return JSONResponse({"ok": True, "message": "配置已保存"})
 
+# ==================== Java 环境 API ====================
+from service.java_environment import JavaManager
+_java_manager = JavaManager()
+
+@app.get("/api/java/info")
+def api_java_info():
+    """获取 Java 环境信息"""
+    try:
+        info = _java_manager.get_java_info()
+        return JSONResponse({"ok": True, "data": info})
+    except Exception as e:
+        logger.error(f"获取 Java 信息失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
 # ==================== Minecraft 下载 API ====================
 
 @app.get("/api/minecraft/config")
