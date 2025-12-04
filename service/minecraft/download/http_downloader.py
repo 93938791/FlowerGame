@@ -9,6 +9,7 @@ from typing import Optional, Callable, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, Future
 from utils.logger import logger
 from .mirror_utils import MirrorManager, MirrorSource
+from config import Config
 
 
 def verify_file_integrity(file_path: Path, sha1: Optional[str] = None, size: Optional[int] = None) -> bool:
@@ -96,7 +97,10 @@ class HttpDownloader:
                 max_connections=max_connections,
                 max_keepalive_connections=20
             ),
-            follow_redirects=True
+            follow_redirects=True,
+            headers={
+                "User-Agent": f"{Config.APP_NAME}/{Config.APP_VERSION}"
+            }
         )
         
         # 线程池用于并发下载
