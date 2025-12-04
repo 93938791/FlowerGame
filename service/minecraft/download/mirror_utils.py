@@ -33,7 +33,9 @@ class MirrorConfig:
             "libraries.minecraft.net": "bmclapi2.bangbang93.com/maven",
             "resources.download.minecraft.net": "bmclapi2.bangbang93.com/assets",
             "meta.fabricmc.net": "bmclapi2.bangbang93.com/fabric-meta",
-            "maven.fabricmc.net": "bmclapi2.bangbang93.com/maven"
+            "maven.fabricmc.net": "bmclapi2.bangbang93.com/maven",
+            "maven.minecraftforge.net": "bmclapi2.bangbang93.com/maven",
+            "files.minecraftforge.net/maven": "bmclapi2.bangbang93.com/maven"
         },
         MirrorSource.MCBBS: {
             "piston-meta.mojang.com": "download.mcbbs.net",

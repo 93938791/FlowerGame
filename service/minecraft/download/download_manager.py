@@ -370,6 +370,10 @@ class MinecraftDownloadManager:
                                 
                                 if primary_file:
                                     download_url = primary_file.get("url")
+                                    # 尝试使用镜像
+                                    if download_url:
+                                        download_url = self.mirror_manager.get_download_url(download_url)
+                                        
                                     filename = primary_file.get("filename")
                                     
                                     if download_url and filename:

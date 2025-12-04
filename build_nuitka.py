@@ -20,6 +20,7 @@ def build_nuitka():
         "--output-dir=dist_nuitka",
         "--output-filename=FlowerGame.exe", # 指定输出文件名
         "--remove-output", # 清理临时构建目录
+        "--clean-cache=all", # 强制清理所有缓存
         "--no-pyi-file",   # 不生成 pyi 文件
         "main.py"
     ]

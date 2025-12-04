@@ -7,6 +7,7 @@ import httpx
 from utils.logger import logger
 from service.minecraft.download.download_manager import MinecraftDownloadManager, DownloadProgress
 from service.minecraft.download.loader_support import LoaderType
+from service.minecraft.download.mirror_utils import MirrorManager
 
 class MrPackInstaller:
     def __init__(self, minecraft_dir: Path):
@@ -108,12 +109,26 @@ class MrPackInstaller:
             
             # 确保 loop 在协程中可用
             loop = asyncio.get_running_loop()
+            
+            # 初始化镜像管理器
+            mirror_manager = MirrorManager()
+
+            # 自动计算并发数
+            import os
+            cpu_count = os.cpu_count() or 4
+            # 策略: 核心数 * 8，最小 16，最大 64
+            # Mod下载通常是IO密集型，可以适当调高并发
+            max_concurrent = min(max(cpu_count * 8, 16), 64)
+            logger.info(f"🚀 整合包下载并发数: {max_concurrent} (CPU: {cpu_count})")
 
             # 移除内部的 import asyncio，使用顶层导入
             # import asyncio
-            async with httpx.AsyncClient(timeout=60.0) as client:  # 增加默认超时时间
-                # 限制并发数为 5
-                semaphore = asyncio.Semaphore(5)
+            # 配置 httpx 连接池限制以匹配并发数
+            limits = httpx.Limits(max_connections=max_concurrent, max_keepalive_connections=20)
+            # 启用 HTTP/2 支持
+            async with httpx.AsyncClient(http2=True, timeout=60.0, limits=limits, follow_redirects=True) as client:  # 增加默认超时时间
+                # 限制并发数
+                semaphore = asyncio.Semaphore(max_concurrent)
                 
                 async def download_file(file_info, index):
                     # 捕获闭包变量，避免 asyncio 引用问题
@@ -133,11 +148,13 @@ class MrPackInstaller:
                             target_path = version_dir / file_path
                             target_path.parent.mkdir(parents=True, exist_ok=True)
                             
-                            download_url = file_info["downloads"][0]
+                            original_url = file_info["downloads"][0]
+                            download_url = mirror_manager.get_download_url(original_url)
                             file_name = Path(file_path).name
                             
                             # 注意：self._update_progress 可能会在线程池中调用，这里是在协程中
-                            self._update_progress("download_files", index + 1, total_files, f"正在下载: {file_name}")
+                            # 使用 index (0-based) 避免最后文件开始下载时就显示 100%
+                            self._update_progress("download_files", index, total_files, f"正在下载: {file_name}")
                             
                             # 检查文件是否已存在且大小匹配
                             if target_path.exists():
@@ -149,7 +166,8 @@ class MrPackInstaller:
                             for attempt in range(max_retries):
                                 try:
                                     # 使用更长的超时时间，适应大文件或慢速网络
-                                    resp = await client.get(download_url, follow_redirects=True, timeout=60.0)
+                                    # 显式禁用 follow_redirects，因为 client 已经配置了，或者在这里覆盖
+                                    resp = await client.get(download_url, timeout=60.0)
                                     if resp.status_code == 200:
                                         # 使用 run_in_executor 进行文件写入，避免阻塞事件循环
                                         await loop.run_in_executor(None, lambda: target_path.write_bytes(resp.content))

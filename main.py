@@ -148,6 +148,14 @@ async def lifespan(app: FastAPI):
     if _http_client:
         await _http_client.aclose()
         
+    # 停止 Easytier
+    try:
+        if _easytier:
+            logger.info("正在停止 Easytier 服务...")
+            _easytier.stop()
+    except Exception as e:
+        logger.error(f"停止 Easytier 失败: {e}")
+
     # 停止 Syncthing
     try:
         logger.info("正在停止 Syncthing 服务...")
@@ -770,12 +778,27 @@ async def api_translate_modrinth(project_id: str):
     try:
         client = get_http_client()
         response = await client.get(target_url, params=params)
+        
         if response.status_code == 200:
             return JSONResponse(response.json())
-        return JSONResponse({"error": "Translation not found"}, status_code=404)
+            
+        # 处理非 200 响应
+        logger.warning(f"翻译 API 返回非 200 状态码: {response.status_code}")
+        try:
+            error_content = response.json()
+            return JSONResponse(error_content, status_code=response.status_code)
+        except:
+            return JSONResponse(
+                {"error": f"Upstream error: {response.status_code}"}, 
+                status_code=response.status_code
+            )
+            
     except Exception as e:
-        logger.error(f"获取翻译失败: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        logger.error(f"获取翻译失败: {e!r}")
+        error_msg = str(e)
+        if not error_msg:
+            error_msg = repr(e)
+        return JSONResponse({"error": error_msg}, status_code=500)
 
 # ... (existing imports)
 
@@ -875,6 +898,9 @@ async def background_download(url: str, full_path: Path, is_modpack: bool = Fals
                 instance_name = full_path.stem # 使用文件名作为实例名
                 installer = MrPackInstaller(Config.MINECRAFT_DIR)
                 
+                # 获取当前事件循环，以便在回调中使用
+                main_loop = asyncio.get_running_loop()
+
                 # 定义进度回调
                 def progress_callback(stage, current, total, message):
                     percent = 0
@@ -883,28 +909,19 @@ async def background_download(url: str, full_path: Path, is_modpack: bool = Fals
                     elif stage == "done":
                         percent = 100
                     
-                    # 记录日志
-                    # logger.info(f"进度: {message} {percent}%")
-                        
-                    # 发送进度 (需要在事件循环中执行)
+                    # 发送进度 (使用 run_coroutine_threadsafe 跨线程调度)
                     try:
-                        # 尝试获取当前运行的事件循环，如果没有则使用 manager 所在的循环（如果有记录的话）或者忽略
-                        try:
-                             loop = asyncio.get_running_loop()
-                        except RuntimeError:
-                             loop = None
-                        
-                        if loop and loop.is_running():
-                             loop.create_task(manager.broadcast({
-                                "type": "download_progress", 
-                                "data": {
-                                    "filename": f"安装整合包: {instance_name}", 
-                                    "percent": percent,
-                                    "total": total,
-                                    "current": current,
-                                    "message": message
-                                }
-                            }))
+                        coro = manager.broadcast({
+                            "type": "download_progress", 
+                            "data": {
+                                "filename": f"安装整合包: {instance_name}", 
+                                "percent": percent,
+                                "total": total,
+                                "current": current,
+                                "message": message
+                            }
+                        })
+                        asyncio.run_coroutine_threadsafe(coro, main_loop)
                     except Exception as e:
                          logger.error(f"发送进度失败: {e}")
 
@@ -977,6 +994,9 @@ async def api_import_mrpack(request: Dict = Body(...)):
     try:
         installer = MrPackInstaller(Config.MINECRAFT_DIR)
         
+        # 获取当前事件循环
+        main_loop = asyncio.get_running_loop()
+        
         # 定义进度回调，推送到前端
         def progress_callback(stage, current, total, message):
             percent = 0
@@ -987,19 +1007,18 @@ async def api_import_mrpack(request: Dict = Body(...)):
                 
             # 发送进度
             try:
-                loop = asyncio.get_running_loop()
-                if loop.is_running():
-                    loop.create_task(manager.broadcast({
-                        "type": "download_progress", 
-                        "data": {
-                            "filename": f"安装整合包: {instance_name}", 
-                            "percent": percent,
-                            "total": total,
-                            "current": current,
-                            "message": message
-                        }
-                    }))
-            except RuntimeError:
+                coro = manager.broadcast({
+                    "type": "download_progress", 
+                    "data": {
+                        "filename": f"安装整合包: {instance_name}", 
+                        "percent": percent,
+                        "total": total,
+                        "current": current,
+                        "message": message
+                    }
+                })
+                asyncio.run_coroutine_threadsafe(coro, main_loop)
+            except Exception:
                 pass
 
         installer.set_progress_callback(progress_callback)

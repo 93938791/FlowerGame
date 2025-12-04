@@ -11,6 +11,39 @@ from utils.logger import logger
 from .mirror_utils import MirrorManager, MirrorSource
 
 
+def verify_file_integrity(file_path: Path, sha1: Optional[str] = None, size: Optional[int] = None) -> bool:
+    """
+    校验文件完整性（独立函数）
+    
+    Args:
+        file_path: 文件路径
+        sha1: 期望的 SHA1 值
+        size: 期望的文件大小
+        
+    Returns:
+        校验是否通过
+    """
+    if not file_path.exists():
+        return False
+        
+    if size is not None and size > 0:
+        if file_path.stat().st_size != size:
+            return False
+            
+    if sha1:
+        try:
+            hasher = hashlib.sha1()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    hasher.update(chunk)
+            return hasher.hexdigest().lower() == sha1.lower()
+        except Exception as e:
+            logger.warning(f"校验文件异常: {e}")
+            return False
+            
+    return True
+
+
 class DownloadTask:
     """下载任务"""
     
@@ -74,6 +107,11 @@ class HttpDownloader:
         self.total_failed = 0
         self.total_skipped = 0  # 跳过的文件数
     
+
+    def verify_file(self, file_path: Path, sha1: Optional[str] = None, size: Optional[int] = None) -> bool:
+        """校验文件完整性（代理到全局函数）"""
+        return verify_file_integrity(file_path, sha1, size)
+
     def download_file(
         self,
         url: str,
@@ -102,7 +140,8 @@ class HttpDownloader:
             return False
             
         # 1. 检查文件是否已存在且完整
-        if self.verify_file(save_path, sha1, size):
+        # 使用全局函数进行校验，避免 self.verify_file 可能的属性丢失问题
+        if verify_file_integrity(save_path, sha1, size):
             if progress_callback and size:
                 progress_callback(size, size)
             return True
@@ -115,6 +154,7 @@ class HttpDownloader:
         download_url = url
         if use_mirror and self.mirror_manager:
             download_url = self.mirror_manager.get_download_url(url)
+        logger.info(f"下载源: {self.mirror_manager.current_source.name if self.mirror_manager else 'unknown'}, URL: {download_url}")
             
         # 4. 执行下载（带重试）
         max_retries = 5
@@ -136,7 +176,7 @@ class HttpDownloader:
                             logger.warning(f"下载失败 {response.status_code}，尝试切换镜像源...")
                             if self.mirror_manager.switch_to_fallback():
                                 download_url = self.mirror_manager.get_download_url(url)
-                                logger.info(f"已切换到: {self.mirror_manager.current_source.name}")
+                                logger.info(f"已切换到: {self.mirror_manager.current_source.name}, URL: {download_url}")
                                 continue
                         
                         raise Exception(f"HTTP {response.status_code}")
@@ -153,7 +193,7 @@ class HttpDownloader:
                                     progress_callback(downloaded_size, total_size)
                 
                 # 5. 下载完成，校验文件
-                if self.verify_file(temp_path, sha1, size):
+                if verify_file_integrity(temp_path, sha1, size):
                     if save_path.exists():
                         save_path.unlink()
                     temp_path.rename(save_path)
@@ -168,9 +208,9 @@ class HttpDownloader:
                 
                 # 如果多次失败，尝试切换镜像源
                 if retry_count >= 2 and self.mirror_manager and use_mirror:
-                     if self.mirror_manager.switch_to_fallback():
+                    if self.mirror_manager.switch_to_fallback():
                         download_url = self.mirror_manager.get_download_url(url)
-                        logger.info(f"多次失败，切换到镜像源: {self.mirror_manager.current_source.name}")
+                        logger.info(f"多次失败，切换到镜像源: {self.mirror_manager.current_source.name}, URL: {download_url}")
         
         # 清理临时文件
         if temp_path.exists():
@@ -178,7 +218,7 @@ class HttpDownloader:
             
         logger.error(f"文件下载最终失败: {save_path.name}")
         return False
-    
+
     def download_batch(
         self,
         tasks: list[DownloadTask],
@@ -276,7 +316,7 @@ class HttpDownloader:
         Returns:
             JSON 数据，失败返回 None
         """
-        download_url = self.mirror_manager.convert_url(url) if use_mirror else url
+        download_url = self.mirror_manager.get_download_url(url) if use_mirror else url
         
         for attempt in range(self.max_retries):
             try:

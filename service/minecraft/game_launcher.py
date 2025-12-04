@@ -29,10 +29,24 @@ class GameLauncher:
     def _find_java_executable(self) -> str:
         """
         查找 Java 可执行文件路径
+        优先使用 JavaManager 查找系统中的最高版本 Java
         
         Returns:
             Java 可执行文件路径
         """
+        try:
+            # 尝试使用 JavaManager 查找最佳 Java 版本
+            from service.java_environment.java_manager import JavaManager
+            java_manager = JavaManager()
+            java_info = java_manager.get_java_info()
+            
+            if java_info.get("installed") and java_info.get("current_path"):
+                logger.info(f"使用自动检测到的最佳 Java: {java_info['current_path']} (版本: {java_info['version']})")
+                return java_info["current_path"]
+        except Exception as e:
+            logger.error(f"自动检测 Java 失败: {e}")
+
+        # 如果自动检测失败，回退到简单的检查
         # 首先检查系统 PATH 中的 java
         try:
             # 使用 startupinfo 隐藏窗口
@@ -331,11 +345,15 @@ class GameLauncher:
             log_file = log_dir / "latest.log"
             
             # 启动游戏进程，将输出重定向到日志文件
+            # Minecraft 是 GUI 程序，不应该隐藏窗口
+            # 但是我们希望在后台运行，不要阻塞主进程，并且不要弹出 cmd 窗口
+            # 使用 DETACHED_PROCESS 可以在 Windows 上独立运行
             process = ProcessHelper.start_process(
                 executable=command[0],
                 args=command[1:],
                 working_dir=working_dir,
-                log_file=str(log_file)
+                log_file=str(log_file),
+                hide_window=True # 这里的 hide_window 实际上是隐藏 cmd 窗口，游戏窗口是独立的
             )
             
             if process:
@@ -658,9 +676,32 @@ class GameLauncher:
             # 确保所有参数都是字符串
             command = [str(arg) for arg in command]
             
-            logger.info(f"完整启动命令: {' '.join(command)}")
+            # 关键修复：处理参数中的空字符串
+            # 有些参数（如 userProperties）可能是空字符串，但不能作为空参数传递给 Java
+            # 如果是空字符串且不是必需的占位符，应该移除
+            # 但某些参数（如 --uuid）后面必须跟值，如果值为空可能会导致参数错位
             
-            return command
+            # 打印调试信息
+            logger.debug(f"原始命令参数数量: {len(command)}")
+            
+            final_command = []
+            skip_next = False
+            
+            for i, arg in enumerate(command):
+                if skip_next:
+                    skip_next = False
+                    continue
+                    
+                # 检查是否是空参数
+                if not arg or arg.isspace():
+                    logger.warning(f"发现空参数，索引: {i}")
+                    continue
+                
+                final_command.append(arg)
+
+            logger.info(f"完整启动命令: {' '.join(final_command)}")
+            
+            return final_command
             
         except Exception as e:
             logger.error(f"构建启动命令时发生异常: {e}", exc_info=True)

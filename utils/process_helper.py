@@ -50,9 +50,10 @@ class ProcessHelper:
                     startupinfo.wShowWindow = subprocess.SW_HIDE
                     # 隐藏窗口时使用 CREATE_NO_WINDOW，避免创建新的控制台
                     creationflags |= 0x08000000  # CREATE_NO_WINDOW
-                
-                # 注意：require_admin 参数只是一个提示，实际上需要整个 Python 程序以管理员权限运行
-                # subprocess.Popen 无法单独提升进程权限，必须父进程已经是管理员
+                else:
+                    # 如果不隐藏窗口，确保创建新控制台，避免黑窗口一闪而过
+                    # 但对于 GUI 程序（如 Minecraft），通常不需要特殊 flag
+                    pass
             
             # 配置输出流
             stdout_target = None

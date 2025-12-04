@@ -21,10 +21,6 @@ class JavaManager:
         paths = self._find_java_paths()
         java_home = os.environ.get("JAVA_HOME", "")
         
-        best_version = "未知"
-        best_path = ""
-        best_major_version = -1
-        
         found_javas = []
 
         for path in paths:
@@ -34,16 +30,27 @@ class JavaManager:
                 found_javas.append({
                     "path": path,
                     "version": version,
-                    "major_version": major
+                    "major_version": major,
+                    "_version_tuple": self._parse_version_tuple(version)
                 })
-                
-                if major > best_major_version:
-                    best_major_version = major
-                    best_version = version
-                    best_path = path
+        
+        # 排序：按版本号元组降序排列
+        found_javas.sort(key=lambda x: x["_version_tuple"], reverse=True)
         
         # 如果没有找到任何版本，状态为未安装
         installed = len(found_javas) > 0
+        
+        best_version = "未知"
+        best_path = ""
+        
+        if installed:
+            best_info = found_javas[0]
+            best_version = best_info["version"]
+            best_path = best_info["path"]
+            
+            # 移除临时字段
+            for j in found_javas:
+                j.pop("_version_tuple", None)
         
         # 推荐标准：至少有一个 Java 17+
         recommended = any(j['major_version'] >= 17 for j in found_javas)
@@ -57,6 +64,17 @@ class JavaManager:
             "current_path": best_path,
             "recommended_installed": recommended
         }
+
+    def _parse_version_tuple(self, version_str: str) -> tuple:
+        """解析版本号为元组用于比较"""
+        try:
+            import re
+            # 将非数字字符替换为 .
+            normalized = re.sub(r'[^\d]+', '.', version_str).strip('.')
+            parts = [int(x) for x in normalized.split('.') if x]
+            return tuple(parts)
+        except:
+            return (0,)
 
     def _get_java_version(self, java_path: str) -> Optional[str]:
         try:
