@@ -11,7 +11,7 @@ a = Analysis(
         ('resources/easytier/wintun.dll', 'resources/easytier'),
         ('resources/easytier/Packet.dll', 'resources/easytier'),
         ('resources/syncthing/syncthing.exe', 'resources/syncthing'),
-        ('resources/icons/*', 'resources/icons'),
+        # ('resources/icons/*', 'resources/icons'), # 图标文件夹已删除
         ('resources/logo.ico', 'resources'),
         ('resources/logo.png', 'resources'),
     ],  # 打包所有必要的资源文件
@@ -46,4 +46,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     uac_admin=True,  # 强制管理员权限启动
+    icon='resources/logo.ico',
 )

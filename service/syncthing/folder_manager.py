@@ -22,7 +22,7 @@ class FolderManager:
         """设置设备ID"""
         self.device_id = device_id
     
-    def add_folder(self, folder_path, folder_id=None, folder_label=None, devices=None, watcher_delay=10, paused=True, async_mode=True):
+    def add_folder(self, folder_path, folder_id=None, folder_label=None, devices=None, watcher_delay=10, paused=True, async_mode=True, folder_type="sendreceive", versioning=None):
         """
         添加同步文件夹
         
@@ -34,6 +34,8 @@ class FolderManager:
             watcher_delay: 文件监控延迟(秒),文件静默这么久后才同步
             paused: 是否暂停同步（默认为True，需要手动启动）
             async_mode: 是否异步执行（默认True，避免阻塞主程序）
+            folder_type: 文件夹类型 (sendreceive, sendonly, receiveonly)
+            versioning: 版本控制配置 (dict)
         """
         folder_path = Path(folder_path)
         if not folder_path.exists():
@@ -61,6 +63,9 @@ class FolderManager:
                 folder["path"] = str(folder_path)
                 folder["fsWatcherDelayS"] = watcher_delay
                 folder["paused"] = paused  # 更新暂停状态
+                if versioning:
+                    folder["versioning"] = versioning # 更新版本控制
+                    logger.info(f"✅ 更新文件夹版本控制: {versioning.get('type')}")
                 if devices:
                     folder["devices"] = [{"deviceID": dev_id} for dev_id in devices]
                     logger.info(f"✅ 更新文件夹设备列表: 共享给 {len(devices)} 个设备: {[dev_id[:7] + '...' for dev_id in devices]}")
@@ -74,7 +79,7 @@ class FolderManager:
             "id": folder_id,
             "label": folder_label,
             "path": str(folder_path),
-            "type": "sendreceive",
+            "type": folder_type,
             "devices": [{"deviceID": dev_id} for dev_id in (devices or [])],
             "rescanIntervalS": 60,
             "fsWatcherEnabled": True,
@@ -82,7 +87,7 @@ class FolderManager:
             "ignorePerms": False,
             "autoNormalize": True,
             "minDiskFree": {"value": 0.5, "unit": "%"},
-            "versioning": {"type": "", "params": {}},
+            "versioning": versioning or {"type": "", "params": {}}, # 使用传入的版本控制配置或默认空
             "copiers": 0,
             "pullerMaxPendingKiB": 0,
             "hashers": 0,
@@ -108,6 +113,17 @@ class FolderManager:
         
         return self.config_manager.set_config(config, async_mode=async_mode)
     
+    def get_folder(self, folder_id):
+        """获取文件夹信息"""
+        config = self.config_manager.get_config()
+        if not config:
+            return None
+        
+        for folder in config.get('folders', []):
+            if folder['id'] == folder_id:
+                return folder
+        return None
+        
     def add_device_to_folder(self, folder_id, device_id):
         """
         添加设备到文件夹

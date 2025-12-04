@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.idea/
+.vscode/
+.claude/
+
+# Build & Distribution
+build/
+dist/
+*.spec
+
+# Logs
+logs/
+*.log
+
+# Misc
+auto_build_section.txt

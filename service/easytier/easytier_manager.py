@@ -12,6 +12,7 @@ from utils.logger import Logger
 from utils.process_helper import ProcessHelper
 from config import Config, RESOURCE_DIR
 from service.easytier.udp_message_manager import UDPMessageManager
+from service.easytier.nat_detector import nat_detector
 
 logger = Logger().get_logger("EasytierManager")
 
@@ -23,6 +24,7 @@ class EasytierManager:
         self.virtual_ip = None
         self.peer_ips = []
         self.udp_manager = None  # UDP消息管理器
+        self.nat_detector = nat_detector  # NAT检测器
         # 流量统计数据
         self.last_tx_bytes = 0
         self.last_rx_bytes = 0
@@ -329,11 +331,23 @@ class EasytierManager:
                 logger.warning("UDP消息服务启动失败")
         except Exception as e:
             logger.error(f"启动UDP消息服务出错: {e}")
+
+        # 启动 NAT 检测
+        try:
+            self.nat_detector.start_detection()
+        except Exception as e:
+            logger.error(f"启动NAT检测服务出错: {e}")
         
         return True
     
     def stop(self):
         """停止Easytier服务"""
+        # 停止 NAT 检测
+        try:
+            self.nat_detector.stop()
+        except Exception as e:
+            logger.warning(f"停止NAT检测服务出错: {e}")
+
         # 先停止 UDP 服务
         if self.udp_manager:
             try:
@@ -559,7 +573,7 @@ class EasytierManager:
                             'is_local': cost == 'Local'  # 标记是否是本机
                         }
                         peers.append(peer_info)
-                        logger.debug(f"解析到设备: {peer_info}")
+                        # logger.debug(f"解析到设备: {peer_info}")
         
         return peers
     
@@ -645,7 +659,8 @@ class EasytierManager:
                     rx_speed = 0
             else:
                 # 第一次调用，初始化数据
-                logger.debug(f"首次获取流量统计: tx_bytes={stats['tx_bytes']}, rx_bytes={stats['rx_bytes']}")
+                pass
+                # logger.debug(f"首次获取流量统计: tx_bytes={stats['tx_bytes']}, rx_bytes={stats['rx_bytes']}")
             
             # 更新历史数据
             self.last_tx_bytes = stats['tx_bytes']
@@ -655,7 +670,7 @@ class EasytierManager:
             stats['tx_speed'] = max(0, tx_speed)  # 确保速度非负
             stats['rx_speed'] = max(0, rx_speed)
             
-            logger.debug(f"流量统计: tx_bytes={stats['tx_bytes']}, rx_bytes={stats['rx_bytes']}, tx_speed={stats['tx_speed']:.2f} B/s, rx_speed={stats['rx_speed']:.2f} B/s")
+            # logger.debug(f"流量统计: tx_bytes={stats['tx_bytes']}, rx_bytes={stats['rx_bytes']}, tx_speed={stats['tx_speed']:.2f} B/s, rx_speed={stats['rx_speed']:.2f} B/s")
             
             return stats
             
@@ -691,7 +706,7 @@ class EasytierManager:
         
         try:
             # 输出完整的原始数据用于调试
-            logger.debug(f"easytier-cli stats 原始输出:\n{output}")
+            # logger.debug(f"easytier-cli stats 原始输出:\n{output}")
             
             lines = output.strip().split('\n')
             
@@ -713,12 +728,12 @@ class EasytierManager:
                     if 'traffic_bytes_self_tx' in metric_name:
                         # 解析值，如 "36.66 KiB" → 字节数
                         tx_bytes = self._parse_size_value(value_str)
-                        logger.debug(f"找到上传流量: {value_str} -> {tx_bytes} bytes")
+                        # logger.debug(f"找到上传流量: {value_str} -> {tx_bytes} bytes")
                     
                     # 查找 traffic_bytes_self_rx（下载）
                     elif 'traffic_bytes_self_rx' in metric_name:
                         rx_bytes = self._parse_size_value(value_str)
-                        logger.debug(f"找到下载流量: {value_str} -> {rx_bytes} bytes")
+                        # logger.debug(f"找到下载流量: {value_str} -> {rx_bytes} bytes")
             
             # 只在流量大于0时才打印INFO日志，避免频繁输出0流量
             # if tx_bytes > 0 or rx_bytes > 0:
@@ -729,8 +744,8 @@ class EasytierManager:
             
         except Exception as e:
             logger.warning(f"解析流量统计失败: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            # import traceback
+            # logger.debug(traceback.format_exc())
         
         return {
             'tx_bytes': tx_bytes,

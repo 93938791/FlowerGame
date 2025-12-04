@@ -89,10 +89,17 @@ class SyncthingManager:
         # 启用所有设备的自动接受共享文件夹（多客户端同步必需）
         self.device_manager.enable_auto_accept_folders()
         
+        # 确保 GUI 配置中的默认行为是自动接受
+        self.config_manager.enable_default_auto_accept()
+        
         # 启动事件监听
         self.event_manager.start_listener()
         
         return True
+
+    def is_running(self):
+        """检查 Syncthing 是否正在运行"""
+        return self.process is not None and ProcessHelper.is_process_running(self.process)
     
     def stop(self):
         """停止Syncthing服务（彻底清理所有进程）"""
@@ -199,6 +206,164 @@ class SyncthingManager:
     def set_config(self, config, async_mode=False):
         """设置完整配置"""
         return self.config_manager.set_config(config, async_mode)
+
+    def scan_network_shares(self, peers):
+        """
+        扫描网络中所有节点的分享目录
+        
+        Args:
+            peers: Easytier节点列表 (包含 ipv4)
+            
+        Returns:
+            list: 分享目录列表 (已过滤本地存在的文件夹，并按ID去重)
+        """
+        # 1. 获取本地已存在的文件夹ID集合
+        local_folder_ids = set()
+        try:
+            local_config = self.config_manager.get_config()
+            if local_config and 'folders' in local_config:
+                for f in local_config['folders']:
+                    local_folder_ids.add(f['id'])
+        except Exception as e:
+            logger.warning(f"获取本地配置失败: {e}")
+
+        # 2. 扫描并聚合远程分享
+        # 使用字典按folder_id去重
+        unique_shares = {}
+        
+        for peer in peers:
+            # 跳过自己
+            if peer.get('is_local'):
+                continue
+                
+            ip = peer.get('ipv4')
+            if not ip:
+                continue
+                
+            logger.info(f"正在扫描节点 {ip} ({peer.get('hostname')}) 的分享...")
+            
+            try:
+                folders = self.remote_manager.get_remote_device_folders(ip)
+                
+                if folders:
+                    for folder_info in folders:
+                        folder_id = folder_info.get('id')
+                        if not folder_id:
+                            continue
+                        
+                        # 策略1: 过滤掉本地已经存在的文件夹
+                        # 只要本地有了，就不在"网络分享"中显示（无论是否连接）
+                        # 因为如果本地有了，要么在"我的同步"里，要么就是我创建的
+                        if folder_id in local_folder_ids:
+                            continue
+                            
+                        # 策略2: 去重
+                        # 如果这个ID已经扫描到了，我们只需要更新它的来源信息（可选）
+                        # 这里简单处理：保留第一个发现的，或者保留元数据最完整的
+                        if folder_id not in unique_shares:
+                            share_info = {
+                                'device_id': folder_info.get('device_id'), 
+                                'device_name': peer.get('hostname'),
+                                'device_ip': ip,
+                                'folder_id': folder_id,
+                                'folder_label': folder_info.get('label', folder_id),
+                                'folder_path': folder_info.get('path'),
+                                'is_connected': False # 既然本地没有，那肯定未连接
+                            }
+                            unique_shares[folder_id] = share_info
+                        else:
+                            # 可以在这里记录"该资源有多个来源"，目前UI不需要，略过
+                            pass
+                            
+            except Exception as e:
+                logger.warning(f"扫描节点 {ip} 失败: {e}")
+                continue
+        
+        return list(unique_shares.values())
+
+    def share_save(self, version_id, save_name, save_path):
+        """
+        分享存档
+        
+        Args:
+            version_id: 游戏版本ID
+            save_name: 存档名称
+            save_path: 存档绝对路径
+        """
+        # 构造唯一的文件夹ID
+        folder_id = f"save-{version_id}-{save_name}"
+        label = f"存档-{save_name} ({version_id})"
+        
+        # 默认开启版本控制，防止误删
+        versioning = {
+            "type": "simple",
+            "params": {
+                "keep": "5"  # 保留最近5个版本
+            }
+        }
+        
+        return self.folder_manager.add_folder(
+            folder_id=folder_id,
+            folder_label=label,
+            folder_path=str(save_path),
+            folder_type="sendreceive", # 双向同步
+            paused=False,
+            versioning=versioning
+        )
+
+    def connect_share(self, device_id, folder_id, local_path, folder_label=None, device_ip=None, device_name=None):
+        """
+        连接远程分享
+        
+        Args:
+            device_id: 远程设备ID
+            folder_id: 文件夹ID
+            local_path: 本地存储路径
+            folder_label: 文件夹标签
+            device_ip: 远程设备IP (用于添加设备)
+            device_name: 远程设备名称 (用于添加设备)
+        """
+        # 1. 确保设备已添加
+        # 注意：device_manager.get_device 可能不存在，需要实现或检查配置
+        config = self.config_manager.get_config()
+        device_exists = False
+        if config:
+            for device in config.get('devices', []):
+                if device['deviceID'] == device_id:
+                    device_exists = True
+                    break
+        
+        if not device_exists:
+            if device_ip:
+                logger.info(f"设备 {device_id} 不存在，正在添加... (IP: {device_ip})")
+                self.add_device(device_id, device_name, device_ip)
+                # 等待配置生效
+                time.sleep(1)
+            else:
+                logger.warning(f"无法添加设备 {device_id}: 缺少IP地址")
+                return False
+            
+        # 2. 添加文件夹并共享给该设备
+        # 注意：Syncthing 需要双方都添加对方设备，并共享文件夹
+        # 如果对方已经共享给我们（Auto Accept），我们只需要添加文件夹即可
+        
+        # 默认开启版本控制，防止误删
+        versioning = {
+            "type": "simple",
+            "params": {
+                "keep": "5"  # 保留最近5个版本
+            }
+        }
+        
+        return self.folder_manager.add_folder(
+            folder_id=folder_id,
+            folder_label=folder_label or folder_id,
+            folder_path=str(local_path),
+            folder_type="sendreceive",
+            devices=[device_id], # 明确指定共享给该设备
+            paused=False,
+            versioning=versioning
+        )
     
     def add_device(self, device_id, device_name=None, device_address=None, async_mode=True):
         """添加远程设备"""
@@ -207,59 +372,3 @@ class SyncthingManager:
     def add_folder(self, folder_path, folder_id=None, folder_label=None, devices=None, watcher_delay=10, paused=True, async_mode=True):
         """添加同步文件夹"""
         return self.folder_manager.add_folder(folder_path, folder_id, folder_label, devices, watcher_delay, paused, async_mode)
-    
-    def add_device_to_folder(self, folder_id, device_id):
-        """添加设备到文件夹"""
-        return self.folder_manager.add_device_to_folder(folder_id, device_id)
-    
-    def resume_folder(self, folder_id):
-        """恢复文件夹同步"""
-        return self.folder_manager.resume_folder(folder_id)
-    
-    def pause_folder(self, folder_id):
-        """暂停文件夹同步"""
-        return self.folder_manager.pause_folder(folder_id)
-    
-    def remove_folder(self, folder_id, async_mode=True):
-        """移除同步文件夹"""
-        return self.folder_manager.remove_folder(folder_id, async_mode)
-    
-    def get_connections(self):
-        """获取连接状态"""
-        return self.device_manager.get_connections()
-    
-    def get_traffic_stats(self):
-        """获取流量统计信息"""
-        return self.device_manager.get_traffic_stats()
-    
-    def get_folder_status(self, folder_id=None):
-        """获取文件夹同步状态"""
-        return self.folder_manager.get_folder_status(folder_id)
-    
-    def get_completion(self, device_id, folder_id=None):
-        """获取同步完成度"""
-        return self.folder_manager.get_completion(device_id, folder_id)
-    
-    def is_syncing(self):
-        """检查是否正在同步"""
-        return self.folder_manager.is_syncing()
-    
-    def get_sync_progress(self):
-        """获取同步进度信息"""
-        return self.folder_manager.get_sync_progress()
-    
-    def register_event_callback(self, callback):
-        """注册事件回调函数"""
-        return self.event_manager.register_callback(callback)
-    
-    def start_event_listener(self):
-        """启动事件监听"""
-        return self.event_manager.start_listener()
-    
-    def stop_event_listener(self):
-        """停止事件监听"""
-        return self.event_manager.stop_listener()
-    
-    def get_remote_device_folders(self, device_ip, device_id=None):
-        """获取远程设备的文件夹列表"""
-        return self.remote_manager.get_remote_device_folders(device_ip, device_id)

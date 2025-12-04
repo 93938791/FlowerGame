@@ -156,6 +156,8 @@ class ConfigManager:
     
     def disable_discovery(self):
         """禁用Syncthing的全局发现和中继，保留本地发现"""
+    def configure_listen_address(self):
+        """配置监听地址，确保监听所有网络接口（Syncthing v2.0+）"""
         try:
             config = self.get_config()
             if not config:
@@ -191,6 +193,29 @@ class ConfigManager:
             logger.error(f"配置发现失败: {e}")
             return False
     
+    def enable_default_auto_accept(self):
+        """启用默认的自动接受文件夹（GUI配置）"""
+        try:
+            config = self.get_config()
+            if not config:
+                return False
+            
+            defaults = config.get('defaults', {})
+            device_defaults = defaults.get('device', {})
+            
+            if not device_defaults.get('autoAcceptFolders', False):
+                device_defaults['autoAcceptFolders'] = True
+                defaults['device'] = device_defaults
+                config['defaults'] = defaults
+                
+                logger.info("✅ 已启用新设备的默认自动接受共享文件夹")
+                return self.set_config(config, async_mode=False)
+            
+            return True
+        except Exception as e:
+            logger.error(f"启用默认自动接受失败: {e}")
+            return False
+
     def configure_listen_address(self):
         """配置监听地址，确保监听所有网络接口（Syncthing v2.0+）"""
         try:

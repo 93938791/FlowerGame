@@ -71,6 +71,21 @@ class DuplicateFilter(logging.Filter):
         
         return True
 
+class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """安全的日志轮转处理器，解决Windows下的PermissionError"""
+    
+    def doRollover(self):
+        """重写doRollover，处理文件占用异常"""
+        try:
+            super().doRollover()
+        except PermissionError:
+            # 如果文件被占用，跳过此次轮转，继续追加到当前文件
+            # 这可能会导致单个日志文件暂时超过大小限制，但保证了程序不崩溃
+            pass
+        except OSError:
+            # 其他IO异常也忽略
+            pass
+
 class Logger:
     """日志管理器"""
     
@@ -119,8 +134,8 @@ class Logger:
         # 创建重复日志过滤器
         duplicate_filter = DuplicateFilter(max_duplicates=2, time_window=3)
         
-        # 使用RotatingFileHandler实现日志轮转
-        file_handler = logging.handlers.RotatingFileHandler(
+        # 使用自定义的SafeRotatingFileHandler
+        file_handler = SafeRotatingFileHandler(
             log_file,
             maxBytes=self.MAX_LOG_SIZE,
             backupCount=self.BACKUP_COUNT,

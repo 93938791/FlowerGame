@@ -31,7 +31,9 @@ class MirrorConfig:
             "launcher.mojang.com": "bmclapi2.bangbang93.com",
             "launchermeta.mojang.com": "bmclapi2.bangbang93.com",
             "libraries.minecraft.net": "bmclapi2.bangbang93.com/maven",
-            "resources.download.minecraft.net": "bmclapi2.bangbang93.com/assets"
+            "resources.download.minecraft.net": "bmclapi2.bangbang93.com/assets",
+            "meta.fabricmc.net": "bmclapi2.bangbang93.com/fabric-meta",
+            "maven.fabricmc.net": "bmclapi2.bangbang93.com/maven"
         },
         MirrorSource.MCBBS: {
             "piston-meta.mojang.com": "download.mcbbs.net",
@@ -60,114 +62,56 @@ class MirrorConfig:
 
 
 class MirrorManager:
-    """镜像源管理器"""
+    """镜像管理器"""
     
-    def __init__(self, preferred_sources: Optional[List[MirrorSource]] = None):
-        """
-        初始化镜像管理器
-        
-        Args:
-            preferred_sources: 优先使用的镜像源列表，默认优先国内源
-        """
-        self.preferred_sources = preferred_sources or [
-            MirrorSource.BMCLAPI,
-            MirrorSource.MCBBS,
-            MirrorSource.OFFICIAL
-        ]
-        self.current_source = self.preferred_sources[0]
-        self.failed_sources = set()
+    def __init__(self):
+        self.current_source = MirrorSource.BMCLAPI  # 默认使用 BMCLAPI
+        self.fallback_sources = [MirrorSource.MCBBS, MirrorSource.OFFICIAL] # 备用源列表
+    
+    def set_source(self, source: MirrorSource):
+        """设置镜像源"""
+        self.current_source = source
     
     def get_version_manifest_url(self) -> str:
         """获取版本清单 URL"""
         return MirrorConfig.VERSION_MANIFEST_URLS[self.current_source]
     
-    def convert_url(self, original_url: str, source: Optional[MirrorSource] = None) -> str:
+    def get_download_url(self, url: str) -> str:
         """
-        转换 URL 到镜像源
+        获取下载 URL（根据当前镜像源自动替换）
         
         Args:
-            original_url: 原始 URL
-            source: 指定镜像源，None 则使用当前源
+            url: 原始 URL
             
         Returns:
-            转换后的 URL
+            替换后的镜像 URL
         """
-        if source is None:
-            source = self.current_source
+        if not url:
+            return url
+            
+        # 官方源不需要替换
+        if self.current_source == MirrorSource.OFFICIAL:
+            return url
+            
+        # 检查域名映射
+        mapping = MirrorConfig.DOMAIN_MAPPING[self.current_source]
+        prefix_mapping = MirrorConfig.PATH_PREFIX_MAPPING[self.current_source]
         
-        # 官方源直接返回
-        if source == MirrorSource.OFFICIAL:
-            return original_url
+        for original_domain, mirror_domain in mapping.items():
+            if original_domain in url:
+                # 获取前缀
+                prefix = prefix_mapping.get(original_domain, "")
+                
+                # 替换域名
+                new_url = url.replace(original_domain, mirror_domain + prefix)
+                return new_url
         
-        # 解析 URL
-        if not original_url.startswith("http"):
-            return original_url
-        
-        # 提取域名和路径
-        url_parts = original_url.replace("https://", "").replace("http://", "").split("/", 1)
-        if len(url_parts) < 2:
-            return original_url
-        
-        original_domain = url_parts[0]
-        path = url_parts[1]
-        
-        # 获取映射配置
-        domain_mapping = MirrorConfig.DOMAIN_MAPPING.get(source, {})
-        path_prefix_mapping = MirrorConfig.PATH_PREFIX_MAPPING.get(source, {})
-        
-        # 转换域名
-        new_domain = domain_mapping.get(original_domain)
-        if not new_domain:
-            return original_url  # 不在映射表中，返回原 URL
-        
-        # 添加路径前缀
-        path_prefix = path_prefix_mapping.get(source, {}).get(original_domain, "")
-        
-        # 构建新 URL
-        new_url = f"https://{new_domain}{path_prefix}/{path}"
-        return new_url
-    
-    def switch_to_next_source(self) -> bool:
-        """
-        切换到下一个可用的镜像源
-        
-        Returns:
-            是否成功切换（如果所有源都失败则返回 False）
-        """
-        self.failed_sources.add(self.current_source)
-        
-        # 查找下一个可用源
-        for source in self.preferred_sources:
-            if source not in self.failed_sources:
-                self.current_source = source
-                return True
-        
-        # 所有源都失败，重置并使用官方源
-        self.failed_sources.clear()
-        self.current_source = MirrorSource.OFFICIAL
+        return url
+
+    def switch_to_fallback(self):
+        """切换到备用源"""
+        if self.fallback_sources:
+            next_source = self.fallback_sources.pop(0)
+            self.current_source = next_source
+            return True
         return False
-    
-    def mark_source_failed(self, source: MirrorSource):
-        """标记某个源失败"""
-        self.failed_sources.add(source)
-    
-    def reset(self):
-        """重置镜像管理器"""
-        self.current_source = self.preferred_sources[0]
-        self.failed_sources.clear()
-    
-    def get_all_mirror_urls(self, original_url: str) -> List[tuple]:
-        """
-        获取所有可能的镜像 URL
-        
-        Args:
-            original_url: 原始 URL
-            
-        Returns:
-            [(镜像源, 转换后的URL), ...] 列表
-        """
-        urls = []
-        for source in self.preferred_sources:
-            converted_url = self.convert_url(original_url, source)
-            urls.append((source, converted_url))
-        return urls

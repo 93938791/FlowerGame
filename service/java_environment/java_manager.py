@@ -66,7 +66,7 @@ class JavaManager:
             output = result.stderr + result.stdout # 混合输出
             
             import re
-            # 匹配 "1.8.0_202" 或 "17.0.1"
+            # 匹配 "1.8.0_202" 或 "17.0.1" 或 "21.0.2"
             match = re.search(r'(?:java|openjdk) version "([^"]+)"', output)
             if match:
                 return match.group(1)
@@ -75,17 +75,33 @@ class JavaManager:
             match = re.search(r'(?:java|openjdk)\s+(\d+(?:\.\d+)*)', output)
             if match:
                 return match.group(1)
+
+            # 增加更宽泛的匹配，防止漏网
+            # 匹配 "21.0.2" 这样的纯数字版本号出现在开头
+            match = re.search(r'(\d+\.\d+\.\d+)', output)
+            if match:
+                return match.group(1)
                 
             return None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"获取 Java 版本失败 {java_path}: {e}")
             return None
 
     def _parse_major_version(self, version_str: str) -> int:
         try:
-            parts = version_str.split('.')
-            if parts[0] == '1' and len(parts) > 1: # 1.8.x -> 8
-                return int(parts[1])
-            return int(parts[0])
+            # 移除可能的非数字前缀/后缀
+            import re
+            # 提取第一个数字部分
+            match = re.search(r'^(\d+)(?:\.(\d+))?', version_str)
+            if not match:
+                return 0
+                
+            major = int(match.group(1))
+            minor = int(match.group(2)) if match.group(2) else 0
+            
+            if major == 1: # 1.8.x -> 8
+                return minor
+            return major
         except:
             return 0
 
@@ -95,7 +111,7 @@ class JavaManager:
         """
         java_paths = set()
 
-        # 1. 检查 PATH
+        # 0. 检查当前进程的 PATH (可能需要重启才能生效，但还是查一下)
         try:
             path_dirs = os.environ.get("PATH", "").split(os.pathsep)
             for d in path_dirs:
@@ -112,27 +128,36 @@ class JavaManager:
             if java_exe.exists():
                 java_paths.add(str(java_exe))
 
-        # 3. 检查常见安装目录 (C:\Program Files\Java)
+        # 3. 检查常见安装目录
         common_dirs = [
             Path("C:/Program Files/Java"),
             Path("C:/Program Files (x86)/Java"),
             Path("C:/Program Files/Eclipse Adoptium"),
             Path("C:/Program Files/Microsoft"), # Microsoft Build of OpenJDK
-            Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Java",
-            Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Java",
-            Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Eclipse Adoptium",
-            Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Microsoft",
+            Path("C:/Program Files/BellSoft"),  # Liberica JDK
+            Path("C:/Program Files/Amazon Corretto"),
+            Path("C:/Program Files/Zulu"),
+            Path(os.environ.get("USERPROFILE", "")) / ".jdks", # IntelliJ IDEA
         ]
         
+        # 尝试从 Config 获取 Minecraft 目录 (如果能导入)
+        try:
+            from config import Config
+            if Config.MINECRAFT_DIR:
+                common_dirs.append(Path(Config.MINECRAFT_DIR) / "runtime")
+        except:
+            pass
+
         # 去重
         common_dirs = list(set(common_dirs))
         
         for base_dir in common_dirs:
             if base_dir.exists():
-                # 检查 base_dir 本身是否包含 bin/java.exe (例如直接安装在 Microsoft 目录下)
-                # Microsoft OpenJDK 通常是 C:\Program Files\Microsoft\jdk-17.0.x.x-hotspot\bin\java.exe
-                
-                # 1. 检查子目录
+                # 检查 base_dir 本身是否包含 bin/java.exe
+                if (base_dir / "bin" / "java.exe").exists():
+                    java_paths.add(str(base_dir / "bin" / "java.exe"))
+
+                # 检查子目录
                 try:
                     for child in base_dir.iterdir():
                         if child.is_dir():
@@ -140,10 +165,21 @@ class JavaManager:
                             java_exe = child / "bin" / "java.exe"
                             if java_exe.exists():
                                 java_paths.add(str(java_exe))
+                            
+                            # 针对 Minecraft runtime，可能还有一层 (runtime/java-runtime-alpha/windows-x64/java-runtime-alpha/bin/java.exe)
+                            # 简单递归一层
+                            try:
+                                for subchild in child.iterdir():
+                                    if subchild.is_dir():
+                                        sub_java_exe = subchild / "bin" / "java.exe"
+                                        if sub_java_exe.exists():
+                                            java_paths.add(str(sub_java_exe))
+                            except:
+                                pass
                 except Exception:
                     pass
         
-        # 5. 注册表检查 (增强检测能力)
+        # 5. 注册表检查
         try:
             self._find_java_from_registry(java_paths)
         except Exception as e:

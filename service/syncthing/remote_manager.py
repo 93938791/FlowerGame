@@ -52,12 +52,14 @@ class RemoteManager:
                 else:
                     logger.error(f"❌ 访问 {device_ip} 的 system/status 失败，状态码: {status_resp.status_code}")
             except Exception as e:
-                logger.error(f"❌ 从 {device_ip} 的 system/status 获取设备ID失败: {e}")
-                import traceback
-                logger.error(f"详细错误: {traceback.format_exc()}")
+                # 连接超时或被拒绝是正常现象（对方可能未启动Syncthing或网络不通）
+                # 降低日志级别为 warning 或 debug，避免 error 刷屏
+                logger.warning(f"无法连接到远程设备 {device_ip} (超时或拒绝): {str(e)[:100]}")
+                # import traceback
+                # logger.debug(f"详细错误: {traceback.format_exc()}")
             
             if not remote_device_id:
-                logger.error(f"❌ 无法从 {device_ip} 获取设备ID")
+                # logger.error(f"❌ 无法从 {device_ip} 获取设备ID")
                 return None
             
             # 验证设备ID（如果提供了）

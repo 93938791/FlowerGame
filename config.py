@@ -139,7 +139,7 @@ class Config:
     WEB_HOST = "0.0.0.0"
     WEB_PORT = 17890
     WEB_OPEN_BROWSER_ON_START = True  # 启动时自动打开浏览器
-    WEB_CONSOLE_URL = "http://192.168.2.18:3000/"  # 公共Web控制台地址
+    WEB_CONSOLE_URL = "http://localhost:3063/web/"  # 公共Web控制台地址
 
     
     @classmethod

@@ -79,98 +79,104 @@ class HttpDownloader:
         url: str,
         save_path: Path,
         sha1: Optional[str] = None,
+        size: Optional[int] = None,
         use_mirror: bool = True,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> bool:
         """
-        下载单个文件（同步方法）
+        下载单个文件，支持自动重试和镜像切换
         
         Args:
-            url: 下载地址
+            url: 下载 URL
             save_path: 保存路径
-            sha1: SHA1 校验值
+            sha1: 文件 SHA1 校验码
+            size: 文件大小（可选，用于进度显示）
             use_mirror: 是否使用镜像加速
-            progress_callback: 进度回调 (downloaded_bytes, total_bytes)
+            progress_callback: 进度回调
             
         Returns:
             是否下载成功
         """
-        # logger.info(f"📥 开始下载: {save_path.name}")
-        
-        # 确保父目录存在
+        if not url:
+            logger.error("下载 URL 为空")
+            return False
+            
+        # 1. 检查文件是否已存在且完整
+        if self.verify_file(save_path, sha1, size):
+            if progress_callback and size:
+                progress_callback(size, size)
+            return True
+            
+        # 2. 准备下载
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        # logger.debug(f"✓ 目录已创建: {save_path.parent}")
+        temp_path = save_path.with_suffix(save_path.suffix + ".part")
         
-        # 如果文件已存在且校验通过，跳过下载
-        if save_path.exists() and sha1:
-            if self._verify_sha1(save_path, sha1):
-                # logger.debug(f"文件已存在且校验通过，跳过下载: {save_path.name}")
-                self.total_skipped += 1
-                return True
-            else:
-                logger.warning(f"文件校验失败，重新下载: {save_path.name}")
-                save_path.unlink()
+        # 3. 获取下载 URL（镜像）
+        download_url = url
+        if use_mirror and self.mirror_manager:
+            download_url = self.mirror_manager.get_download_url(url)
+            
+        # 4. 执行下载（带重试）
+        max_retries = 5
+        retry_count = 0
         
-        # 获取下载 URL（使用镜像）
-        download_url = self.mirror_manager.convert_url(url) if use_mirror else url
-        # logger.info(f"🔗 下载地址: {download_url}")
-        
-        # 重试机制
-        for attempt in range(self.max_retries):
+        while retry_count < max_retries:
             try:
-                # 发送请求
-                with self.client.stream("GET", download_url) as response:
-                    # 检查 429 错误，切换到官方源
-                    if response.status_code == 429:
-                        logger.warning(f"遇到 429 限流，切换到官方源重试: {save_path.name}")
-                        download_url = url  # 使用原始 URL（官方源）
-                        continue
+                import time
+                # 线性退避
+                if retry_count > 0:
+                    wait_time = 2 * retry_count
+                    time.sleep(wait_time)
+                
+                # 使用流式下载
+                with self.client.stream("GET", download_url, follow_redirects=True, timeout=60.0) as response:
+                    if response.status_code != 200:
+                        # 如果是 404 或其他错误，尝试切换镜像源
+                        if self.mirror_manager and use_mirror:
+                            logger.warning(f"下载失败 {response.status_code}，尝试切换镜像源...")
+                            if self.mirror_manager.switch_to_fallback():
+                                download_url = self.mirror_manager.get_download_url(url)
+                                logger.info(f"已切换到: {self.mirror_manager.current_source.name}")
+                                continue
+                        
+                        raise Exception(f"HTTP {response.status_code}")
                     
-                    response.raise_for_status()
-                    
-                    # 获取文件大小
-                    total_size = int(response.headers.get("content-length", 0))
+                    total_size = int(response.headers.get("content-length", 0)) or size or 0
                     downloaded_size = 0
                     
-                    # 分块下载并写入
-                    with open(save_path, "wb") as f:
+                    with open(temp_path, "wb") as f:
                         for chunk in response.iter_bytes(chunk_size=8192):
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            
-                            # 调用进度回调
-                            if progress_callback:
-                                progress_callback(downloaded_size, total_size)
+                            if chunk:
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                if progress_callback:
+                                    progress_callback(downloaded_size, total_size)
                 
-                # 校验 SHA1
-                if sha1 and not self._verify_sha1(save_path, sha1):
-                    logger.error(f"文件 SHA1 校验失败: {save_path.name}")
-                    save_path.unlink()
+                # 5. 下载完成，校验文件
+                if self.verify_file(temp_path, sha1, size):
+                    if save_path.exists():
+                        save_path.unlink()
+                    temp_path.rename(save_path)
+                    return True
+                else:
+                    logger.warning(f"文件校验失败: {save_path.name} (重试 {retry_count+1}/{max_retries})")
+                    retry_count += 1
                     
-                    if attempt < self.max_retries - 1:
-                        logger.info(f"第 {attempt + 1} 次重试下载...")
-                        continue
-                    return False
-                
-                self.total_downloaded += 1
-                return True
-            
-            except httpx.HTTPStatusError as e:
-                logger.error(f"HTTP 错误 {e.response.status_code}: {save_path.name}")
-                if attempt < self.max_retries - 1:
-                    logger.info(f"第 {attempt + 1} 次重试下载...")
-                    continue
-            
             except Exception as e:
-                logger.error(f"下载失败: {save_path.name}, 错误: {e}")
-                if attempt < self.max_retries - 1:
-                    logger.info(f"第 {attempt + 1} 次重试下载...")
-                    continue
+                logger.warning(f"下载异常: {e} (重试 {retry_count+1}/{max_retries}) - {download_url}")
+                retry_count += 1
+                
+                # 如果多次失败，尝试切换镜像源
+                if retry_count >= 2 and self.mirror_manager and use_mirror:
+                     if self.mirror_manager.switch_to_fallback():
+                        download_url = self.mirror_manager.get_download_url(url)
+                        logger.info(f"多次失败，切换到镜像源: {self.mirror_manager.current_source.name}")
         
-        # 所有重试都失败
-        self.total_failed += 1
-        if save_path.exists():
-            save_path.unlink()
+        # 清理临时文件
+        if temp_path.exists():
+            temp_path.unlink()
+            
+        logger.error(f"文件下载最终失败: {save_path.name}")
         return False
     
     def download_batch(

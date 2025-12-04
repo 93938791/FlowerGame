@@ -2,17 +2,19 @@
 Minecraft 下载管理器
 整合所有下载模块，提供统一的下载接口
 """
+import json
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 from utils.logger import logger
 from .mirror_utils import MirrorManager
 from .http_downloader import HttpDownloader
 from .version_manifest import VersionManifest
-from .version_info import VersionInfo
+from .version_info import VersionInfo, RuleEvaluator
 from .client_downloader import ClientDownloader
 from .library_downloader import LibraryDownloader
 from .asset_downloader import AssetDownloader
 from .loader_support import LoaderManager, LoaderType
+from .forge_installer import ForgeInstaller
 
 
 class DownloadProgress:
@@ -136,12 +138,15 @@ class MinecraftDownloadManager:
                 logger.error("版本信息不完整")
                 return False
             
-            # 获取版本 JSON（使用自定义名称）
+            # 获取版本 JSON（区分目录名和文件名）
+            # 目录名：使用 custom_name 或 version_id
+            # 文件名：始终使用 version_id
             version_info = VersionInfo.from_url(
-                final_name,  # 使用自定义名称
+                version_id,  # 文件名使用原始版本号
                 version_url,
                 self.minecraft_dir,
-                self.downloader
+                self.downloader,
+                custom_dir_name=final_name  # 目录名使用自定义名称
             )
             
             if not version_info:
@@ -151,7 +156,7 @@ class MinecraftDownloadManager:
             version_info.save_version_json()
             self._update_progress("version_info", 1, 1, "版本信息获取完成")
             
-            # 3. 下载客户端 JAR
+            # 3. 下载客户端 JAR（使用 version_info 的路径，确保文件名正确）
             self._update_progress("client_jar", 0, 1, "正在下载客户端 JAR...")
             client_info = version_info.get_client_download_info()
             if not client_info:
@@ -166,8 +171,22 @@ class MinecraftDownloadManager:
                     f"正在下载客户端 JAR: {downloaded / 1024 / 1024:.1f}/{total / 1024 / 1024:.1f} MB"
                 )
             
-            # 使用自定义名称下载客户端
-            if not self.client_downloader.download_client(final_name, client_info, client_progress):
+            # 直接下载到 version_info 指定的路径（目录名是自定义的，文件名是版本号）
+            url = client_info.get("url")
+            sha1 = client_info.get("sha1")
+            jar_path = version_info.get_client_jar_path()  # 使用 version_info 的路径方法
+            
+            logger.info(f"下载客户端 JAR 到: {jar_path}")
+            
+            success = self.downloader.download_file(
+                url=url,
+                save_path=jar_path,
+                sha1=sha1,
+                use_mirror=True,
+                progress_callback=client_progress
+            )
+            
+            if not success:
                 logger.error("客户端 JAR 下载失败")
                 return False
             
@@ -218,7 +237,8 @@ class MinecraftDownloadManager:
         mc_version: str,
         loader_type: LoaderType,
         loader_version: str,
-        custom_name: Optional[str] = None
+        custom_name: Optional[str] = None,
+        fabric_api_version: Optional[str] = None
     ) -> bool:
         """
         下载带加载器的版本
@@ -233,18 +253,19 @@ class MinecraftDownloadManager:
             是否下载成功
         """
         logger.info(f"开始下载 {mc_version} + {loader_type.value} {loader_version}")
+        if custom_name:
+            logger.info(f"📝 自定义名称: {custom_name}")
         
         try:
-            # 1. 先下载原版
-            if not self.download_vanilla(mc_version):
+            # 1. 先下载原版（使用自定义名称）
+            if not self.download_vanilla(mc_version, custom_name):
                 return False
             
             # 2. 获取加载器配置
-            self._update_progress("loader", 0, 1, f"正在获取 {loader_type.value} 配置...")
+            self._update_progress("loader_info", 0, 1, f"正在获取 {loader_type.value} 配置...")
             
             if loader_type == LoaderType.FABRIC:
-                profile = self.loader_manager.get_loader_profile(
-                    loader_type,
+                profile = self.loader_manager.fabric.get_profile_json(
                     mc_version,
                     loader_version
                 )
@@ -253,23 +274,385 @@ class MinecraftDownloadManager:
                     logger.error("获取 Fabric 配置失败")
                     return False
                 
-                # TODO: 合并 Fabric 配置并下载额外的库
-                logger.info("Fabric 配置获取成功（需要实现配置合并）")
+                self._update_progress("loader_info", 1, 1, "Fabric 配置获取成功")
+                logger.info("Fabric 配置获取成功")
+                
+                # 3. 下载 Fabric 依赖库
+                fabric_libraries = profile.get("libraries", [])
+                if fabric_libraries:
+                    total_libs = len(fabric_libraries)
+                    self._update_progress("loader_libraries", 0, total_libs, f"正在下载 Fabric 依赖库 (共 {total_libs} 个)...")
+                    
+                    def fabric_lib_progress(current, total):
+                        self._update_progress(
+                            "loader_libraries",
+                            current,
+                            total,
+                            f"正在下载 Fabric 依赖库: {current}/{total}"
+                        )
+                    
+                    logger.info(f"Fabric 依赖库数量: {len(fabric_libraries)}")
+                    
+                    # Fabric的库下载到全局libraries目录（不是版本专属目录）
+                    # 所有版本共享libraries
+                    success = self.library_downloader.download_libraries(
+                        fabric_libraries,
+                        None,  # Fabric的库不需要natives解压
+                        fabric_lib_progress
+                    )
+                    
+                    if success:
+                        self._update_progress("loader_libraries", total_libs, total_libs, "Fabric 依赖库下载完成")
+                        logger.info("📦 Fabric 依赖库下载完成")
+                    else:
+                        logger.warning("部分 Fabric 依赖库下载失败")
+                
+                # 4. 如果选择了 Fabric API，下载到版本专属的 mods 目录
+                # 根据版本隔离要求，每个版本有独立的 mods 目录
+                if fabric_api_version:
+                    self._update_progress("fabric_api", 0, 1, "正在下载 Fabric API...")
+                    
+                    # 注意：这里需要先计算version_dir_name（在步骤5中定义）
+                    # 为了避免重复计算，我们这里直接使用custom_name
+                    version_dir_for_mods = custom_name if custom_name else f"fabric-loader-{loader_version}-{mc_version}"
+                    # 版本隔离：mods 目录在版本专属目录下
+                    version_mods_dir = self.minecraft_dir / "versions" / version_dir_for_mods / "mods"
+                    version_mods_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    logger.info(f"📂 版本专属 mods 目录: {version_mods_dir}")
+                    
+                    # 从 Modrinth 获取 Fabric API 下载链接
+                    try:
+                        from utils.httpx import get_session
+                        client = get_session()
+                        
+                        # Fabric API 的 Modrinth ID
+                        fabric_api_id = "P7dR8mSH"
+                        url = f"https://api.modrinth.com/v2/project/{fabric_api_id}/version"
+                        
+                        # 增加超时时间，并添加重试机制
+                        retry_count = 3
+                        versions_data = None
+                        
+                        for attempt in range(retry_count):
+                            try:
+                                response = client.get(url, timeout=15.0)
+                                if response.status_code == 200:
+                                    versions_data = response.json()
+                                    break
+                                else:
+                                    logger.warning(f"Modrinth API 请求失败: {response.status_code} (重试 {attempt+1}/{retry_count})")
+                                    import time
+                                    time.sleep(1)
+                            except Exception as e:
+                                logger.warning(f"Modrinth API 请求异常: {e} (重试 {attempt+1}/{retry_count})")
+                                import time
+                                time.sleep(1)
+                        
+                        if versions_data:
+                            # 查找匹配的版本
+                            target_version = None
+                            for version in versions_data:
+                                if version.get("version_number") == fabric_api_version:
+                                    target_version = version
+                                    break
+                            
+                            if target_version and target_version.get("files"):
+                                # 获取主文件
+                                primary_file = None
+                                for file in target_version["files"]:
+                                    if file.get("primary", False):
+                                        primary_file = file
+                                        break
+                                
+                                if not primary_file and target_version["files"]:
+                                    primary_file = target_version["files"][0]
+                                
+                                if primary_file:
+                                    download_url = primary_file.get("url")
+                                    filename = primary_file.get("filename")
+                                    
+                                    if download_url and filename:
+                                        # 下载 Fabric API jar 到版本专属 mods 目录
+                                        fabric_api_path = version_mods_dir / filename
+                                        
+                                        logger.info(f"下载 Fabric API: {filename}")
+                                        
+                                        # 下载文件重试机制
+                                        download_success = False
+                                        for attempt in range(retry_count):
+                                            try:
+                                                file_response = client.get(download_url, timeout=30.0)
+                                                if file_response.status_code == 200:
+                                                    with open(fabric_api_path, "wb") as f:
+                                                        f.write(file_response.content)
+                                                    download_success = True
+                                                    break
+                                                else:
+                                                    logger.warning(f"Fabric API 下载失败: {file_response.status_code} (重试 {attempt+1}/{retry_count})")
+                                            except Exception as e:
+                                                logger.warning(f"Fabric API 下载异常: {e} (重试 {attempt+1}/{retry_count})")
+                                        
+                                        if download_success:
+                                            logger.info(f"✅ Fabric API 已下载到: {fabric_api_path}")
+                                            self._update_progress("fabric_api", 1, 1, "Fabric API 下载完成")
+                                        else:
+                                            logger.error("Fabric API 下载最终失败")
+                                    else:
+                                        logger.error("Fabric API 文件信息不完整")
+                                else:
+                                    logger.error("Fabric API 没有有效的下载文件")
+                            else:
+                                logger.error(f"未找到 Fabric API 版本: {fabric_api_version}")
+                        else:
+                            logger.error("无法获取 Fabric API 版本列表")
+                    except Exception as e:
+                        logger.error(f"下载 Fabric API 失败: {e}")
+                
+                # 5. 创建 Fabric 版本 JSON
+                # 有自定义名称：完全合并（像 PCL 那样）
+                # 无自定义名称：使用 inheritsFrom 继承
+                
+                # 5. 创建 Fabric 版本 JSON（完全合并模式，与 Forge 一致）
+                import shutil
+                
+                # 确定最终版本名称
+                final_name = custom_name.strip() if custom_name else f"fabric-loader-{loader_version}-{mc_version}"
+                
+                logger.info(f"🔧 使用完全合并模式安装 Fabric")
+                
+                version_dir = self.minecraft_dir / "versions" / final_name
+                version_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 读取原版MC的JSON
+                mc_json_path = version_dir / f"{mc_version}.json"
+                if not mc_json_path.exists():
+                    error_msg = f"MC JSON不存在: {mc_json_path}"
+                    logger.error(error_msg)
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                try:
+                    with open(mc_json_path, "r", encoding="utf-8") as f:
+                        mc_data = json.load(f)
+                    
+                    # 以MC原版为基础，合并Fabric配置
+                    merged_data = mc_data.copy()
+                    merged_data["id"] = final_name
+                    merged_data["type"] = "fabric"
+                    merged_data["mainClass"] = profile.get("mainClass")
+                    
+                    # 删除 inheritsFrom（完全合并模式）
+                    if "inheritsFrom" in merged_data:
+                        del merged_data["inheritsFrom"]
+                    
+                    # 合并arguments
+                    if "arguments" not in merged_data:
+                        merged_data["arguments"] = {}
+                    if "arguments" in profile:
+                        for arg_type in ["game", "jvm"]:
+                            if arg_type in profile["arguments"]:
+                                if arg_type not in merged_data["arguments"]:
+                                    merged_data["arguments"][arg_type] = []
+                                merged_data["arguments"][arg_type].extend(profile["arguments"][arg_type])
+                    
+                    # 合并libraries（去重，优先使用Fabric的高版本库）
+                    if "libraries" not in merged_data:
+                        merged_data["libraries"] = []
+                    
+                    # 构建MC库的名称集合（用于去重）
+                    mc_lib_names = {}
+                    for lib in merged_data["libraries"]:
+                        lib_name = lib.get("name", "")
+                        if lib_name:
+                            parts = lib_name.split(":")
+                            if len(parts) >= 2:
+                                base_name = f"{parts[0]}:{parts[1]}"
+                                mc_lib_names[base_name] = lib
+                    
+                    # 添加Fabric库，如果有冲突则覆盖
+                    for fabric_lib in fabric_libraries:
+                        lib_name = fabric_lib.get("name", "")
+                        if lib_name:
+                            parts = lib_name.split(":")
+                            if len(parts) >= 2:
+                                base_name = f"{parts[0]}:{parts[1]}"
+                                if base_name in mc_lib_names:
+                                    old_lib = mc_lib_names[base_name]
+                                    merged_data["libraries"].remove(old_lib)
+                                    logger.info(f"⚠️ 库冲突，使用Fabric版本: {lib_name}")
+                        merged_data["libraries"].append(fabric_lib)
+                    
+                    # 保存合并后JSON（使用版本名作为文件名）
+                    final_json_path = version_dir / f"{final_name}.json"
+                    with open(final_json_path, "w", encoding="utf-8") as f:
+                        json.dump(merged_data, f, ensure_ascii=False, indent=2)
+                    
+                    logger.info(f"✅ Fabric 版本已创建: {final_json_path.name}")
+                    logger.info(f"🎮 mainClass: {merged_data.get('mainClass')}")
+                    logger.info(f"📦 Libraries: {len(merged_data.get('libraries', []))} 个")
+                    
+                    # 处理文件重命名（与 Forge 一致）
+                    # 重命名 JAR
+                    old_jar = version_dir / f"{mc_version}.jar"
+                    final_jar = version_dir / f"{final_name}.jar"
+                    if old_jar.exists() and not final_jar.exists():
+                        old_jar.rename(final_jar)
+                        logger.info(f"✅ 已重命名 JAR: {mc_version}.jar → {final_name}.jar")
+                    
+                    # 删除原版 JSON（避免混淆）
+                    if mc_json_path.exists() and mc_json_path != final_json_path:
+                        mc_json_path.unlink()
+                        logger.info(f"🗑️ 已删除原版 JSON: {mc_version}.json")
+                    
+                except Exception as e:
+                    error_msg = f"合并 Fabric 配置失败: {e}"
+                    logger.error(error_msg)
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                logger.info("✅ Fabric 安装完成")
             
             elif loader_type == LoaderType.FORGE:
-                # Forge 需要下载安装器
-                installer_url = self.loader_manager.forge.get_installer_url(
-                    mc_version,
-                    loader_version
+                # Forge 自动安装（使用新的 ForgeInstaller）
+                logger.info(f"🔨 开始Forge自动安装: {loader_version}")
+                
+                # 1. 获取Forge配置
+                self._update_progress("loader_info", 0, 1, "正在获取 Forge 配置...")
+                forge_data = self.loader_manager.get_loader_profile(loader_type, mc_version, loader_version)
+                if not forge_data:
+                    error_msg = "获取Forge配置失败"
+                    logger.error(error_msg)
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                version_json = forge_data.get("version")
+                installer_type = forge_data.get("installer_type")
+                
+                if not version_json:
+                    error_msg = "Forge配置缺失version字段"
+                    logger.error(error_msg)
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                logger.info(f"📝 Forge安装器类型: {installer_type}")
+                logger.info(f"🆔 Forge版本: {version_json.get('id')}")
+                self._update_progress("loader_info", 1, 1, "Forge 配置获取成功")
+                
+                # 2. 使用 ForgeInstaller 执行安装
+                def forge_progress_callback(stage: str, current: int, total: int):
+                    stage_names = {
+                        "forge_libraries": "下载 Forge 依赖库",
+                        "extract_data": "提取安装数据",
+                        "processors": "执行 Forge 处理器",
+                        "generate_json": "生成版本配置"
+                    }
+                    stage_name = stage_names.get(stage, stage)
+                    self._update_progress(
+                        stage,  # 直接使用原始 stage 名称
+                        current,
+                        total,
+                        f"{stage_name}: {current}/{total}"
+                    )
+                
+                forge_installer = ForgeInstaller(
+                    minecraft_dir=self.minecraft_dir,
+                    downloader=self.downloader,
+                    progress_callback=forge_progress_callback
                 )
-                logger.info(f"Forge 安装器 URL: {installer_url}")
-                logger.warning("Forge 安装需要手动运行安装器（自动安装功能待实现）")
+                
+                # 查找 Java 路径
+                java_path = self._find_java_path()
+                
+                success = forge_installer.install_forge(
+                    mc_version=mc_version,
+                    forge_version=loader_version,
+                    forge_data=forge_data,
+                    custom_name=custom_name,
+                    java_path=java_path
+                )
+                
+                if not success:
+                    error_msg = "Forge 安装失败"
+                    logger.error(error_msg)
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                logger.info("✅ Forge 安装完成")
             
-            self._update_progress("loader", 1, 1, f"{loader_type.value} 处理完成")
+            elif loader_type == LoaderType.NEOFORGE:
+                # NeoForge 安装（与 Forge 1.13+ 类似）
+                logger.info(f"🔧 开始 NeoForge 自动安装: {loader_version}")
+                
+                # 1. 获取 NeoForge 配置
+                self._update_progress("loader_info", 0, 1, "正在获取 NeoForge 配置...")
+                neoforge_data = self.loader_manager.get_loader_profile(loader_type, mc_version, loader_version)
+                if not neoforge_data:
+                    error_msg = "获取 NeoForge 配置失败"
+                    logger.error(error_msg)
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                version_json = neoforge_data.get("version")
+                
+                if not version_json:
+                    error_msg = "NeoForge 配置缺失 version 字段"
+                    logger.error(error_msg)
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                logger.info(f"🆔 NeoForge 版本: {version_json.get('id')}")
+                self._update_progress("loader_info", 1, 1, "NeoForge 配置获取成功")
+                
+                # 2. 使用 ForgeInstaller 执行安装（NeoForge 模式）
+                def neoforge_progress_callback(stage: str, current: int, total: int):
+                    stage_names = {
+                        "forge_libraries": "下载 NeoForge 依赖库",
+                        "extract_data": "提取安装数据",
+                        "processors": "执行 NeoForge 处理器",
+                        "generate_json": "生成版本配置"
+                    }
+                    stage_name = stage_names.get(stage, stage)
+                    self._update_progress(
+                        stage,
+                        current,
+                        total,
+                        f"{stage_name}: {current}/{total}"
+                    )
+                
+                neoforge_installer = ForgeInstaller(
+                    minecraft_dir=self.minecraft_dir,
+                    downloader=self.downloader,
+                    progress_callback=neoforge_progress_callback
+                )
+                
+                # 查找 Java 路径
+                java_path = self._find_java_path()
+                
+                success = neoforge_installer.install_neoforge(
+                    mc_version=mc_version,
+                    neoforge_version=loader_version,
+                    neoforge_data=neoforge_data,
+                    custom_name=custom_name,
+                    java_path=java_path
+                )
+                
+                if not success:
+                    error_msg = "NeoForge 安装失败"
+                    logger.error(error_msg)
+                    self._update_progress("error", 0, 0, error_msg)
+                    return False
+                
+                logger.info("✅ NeoForge 安装完成")
+            
+            self._update_progress("complete", 1, 1, f"{loader_type.value} 安装完成")
             return True
         
         except Exception as e:
             logger.error(f"下载加载器版本失败: {e}", exc_info=True)
+            self._update_progress("error", 0, 0, f"下载失败: {e}")
             return False
     
     def list_versions(self, version_type: Optional[str] = None) -> list:
@@ -359,7 +742,25 @@ class MinecraftDownloadManager:
         
         if self.progress_callback:
             try:
-                self.progress_callback(self.progress)
+                # 检查是否是异步回调
+                import inspect
+                import asyncio
+                if inspect.iscoroutinefunction(self.progress_callback):
+                    # 如果在事件循环中，使用 create_task
+                    try:
+                        loop = asyncio.get_running_loop()
+                        if loop.is_running():
+                            loop.create_task(self.progress_callback(self.progress))
+                    except RuntimeError:
+                        # 如果没有事件循环，创建一个新的（不太可能在下载器中发生，除非是在独立脚本）
+                        pass
+                else:
+                    # 如果不是协程函数，直接调用
+                    # 但如果外部期望是异步环境（例如在异步任务中调用同步回调），这可能会阻塞
+                    # 如果回调本身需要进行异步操作（如 manager.broadcast），它应该被定义为 async
+                    
+                    # 这里尝试检查是否需要将同步回调放入线程池，或者直接调用
+                    self.progress_callback(self.progress)
             except Exception as e:
                 logger.error(f"进度回调异常: {e}")
         
@@ -373,6 +774,78 @@ class MinecraftDownloadManager:
     def close(self):
         """关闭下载器"""
         self.downloader.close()
+    
+    def _detect_loader_type(self, version_data: dict, version_id: str) -> str:
+        """
+        检测版本的加载器类型
+        
+        Args:
+            version_data: 版本 JSON 数据
+            version_id: 版本 ID
+            
+        Returns:
+            加载器类型: fabric, forge, neoforge, optifine, release, snapshot
+        """
+        # 1. 检查 mainClass 字段
+        main_class = version_data.get("mainClass", "").lower()
+        
+        if "fabric" in main_class or "net.fabricmc" in main_class:
+            return "fabric"
+        if "neoforge" in main_class or "net.neoforged" in main_class:
+            return "neoforge"
+        if "forge" in main_class or "net.minecraftforge" in main_class:
+            return "forge"
+        if "optifine" in main_class:
+            return "optifine"
+        
+        # 2. 检查 libraries 字段
+        libraries = version_data.get("libraries", [])
+        for lib in libraries:
+            lib_name = lib.get("name", "").lower()
+            if "net.fabricmc" in lib_name or "fabric-loader" in lib_name:
+                return "fabric"
+            if "net.neoforged" in lib_name or "neoforge" in lib_name:
+                return "neoforge"
+            if "net.minecraftforge" in lib_name or "forge" in lib_name:
+                # 需要再次检查不是 neoforge
+                if "neoforge" not in lib_name:
+                    return "forge"
+            if "optifine" in lib_name:
+                return "optifine"
+        
+        # 3. 检查版本 ID
+        version_id_lower = version_id.lower()
+        if "fabric" in version_id_lower:
+            return "fabric"
+        if "neoforge" in version_id_lower:
+            return "neoforge"
+        if "forge" in version_id_lower:
+            return "forge"
+        if "optifine" in version_id_lower:
+            return "optifine"
+        
+        # 4. 检查 inheritsFrom 字段（有些版本会有这个）
+        inherits_from = version_data.get("inheritsFrom", "")
+        if inherits_from:
+            # 如果有继承，说明可能是加载器版本，再检查 arguments 或 minecraftArguments
+            arguments = version_data.get("arguments", {})
+            game_args = arguments.get("game", []) if isinstance(arguments, dict) else []
+            jvm_args = arguments.get("jvm", []) if isinstance(arguments, dict) else []
+            
+            all_args = str(game_args) + str(jvm_args)
+            if "fabric" in all_args.lower():
+                return "fabric"
+            if "neoforge" in all_args.lower():
+                return "neoforge"
+            if "forge" in all_args.lower():
+                return "forge"
+        
+        # 5. 默认返回官方类型
+        official_type = version_data.get("type", "release")
+        if official_type in ["snapshot", "old_beta", "old_alpha"]:
+            return official_type
+        
+        return "release"
     
     def list_installed_versions(self) -> list:
         """
@@ -393,31 +866,25 @@ class MinecraftDownloadManager:
             if version_dir.is_dir():
                 version_id = version_dir.name
                 
-                # 检查是否存在版本 JSON 文件
-                version_json = version_dir / f"{version_id}.json"
-                version_jar = version_dir / f"{version_id}.jar"
+                # 查找目录中的JSON和JAR文件
+                json_files = list(version_dir.glob("*.json"))
+                jar_files = list(version_dir.glob("*.jar"))
                 
-                if version_json.exists() and version_jar.exists():
+                # 必须同时存在JSON和JAR才算有效版本
+                if json_files and jar_files:
+                    version_json = json_files[0]
+                    version_jar = jar_files[0]
                     # 读取版本信息
                     try:
                         with open(version_json, "r", encoding="utf-8") as f:
                             version_data = json.load(f)
                         
-                        # 获取版本类型，如果没有则尝试从 id 推断
-                        version_type = version_data.get("type")
-                        if not version_type or version_type == "unknown":
-                            # 尝试从版本名推断类型
-                            if "snapshot" in version_id.lower() or "w" in version_id.lower():
-                                version_type = "snapshot"
-                            elif "pre" in version_id.lower() or "rc" in version_id.lower():
-                                version_type = "snapshot"
-                            else:
-                                # 默认为 release
-                                version_type = "release"
+                        # 检测加载器类型
+                        loader_type = self._detect_loader_type(version_data, version_id)
                         
                         version_info = {
                             "id": version_id,
-                            "type": version_type,
+                            "type": loader_type,
                             "installed": True,
                             "jar_exists": version_jar.exists(),
                             "json_exists": version_json.exists()
@@ -429,9 +896,18 @@ class MinecraftDownloadManager:
                         # 即使读取失败，也添加基本版本信息
                         # 尝试从版本名推断类型
                         version_type = "release"
-                        if "snapshot" in version_id.lower() or "w" in version_id.lower():
+                        version_id_lower = version_id.lower()
+                        if "fabric" in version_id_lower:
+                            version_type = "fabric"
+                        elif "neoforge" in version_id_lower:
+                            version_type = "neoforge"
+                        elif "forge" in version_id_lower:
+                            version_type = "forge"
+                        elif "optifine" in version_id_lower:
+                            version_type = "optifine"
+                        elif "snapshot" in version_id_lower or "w" in version_id_lower:
                             version_type = "snapshot"
-                        elif "pre" in version_id.lower() or "rc" in version_id.lower():
+                        elif "pre" in version_id_lower or "rc" in version_id_lower:
                             version_type = "snapshot"
                         
                         installed_versions.append({
@@ -443,6 +919,45 @@ class MinecraftDownloadManager:
                         })
         
         return installed_versions
+    
+    def _find_java_path(self) -> str:
+        """
+        查找 Java 可执行文件路径
+        
+        Returns:
+            Java 可执行文件路径
+        """
+        import subprocess
+        import platform
+        
+        # 首先检查系统 PATH 中的 java
+        try:
+            result = subprocess.run(["java", "-version"], 
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                return "java"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        # Windows 系统尝试常见路径
+        if platform.system() == "Windows":
+            common_paths = [
+                "C:\\Program Files\\Java\\jdk-17\\bin\\java.exe",
+                "C:\\Program Files\\Java\\jre-17\\bin\\java.exe",
+                "C:\\Program Files\\Eclipse Adoptium\\jdk-17\\bin\\java.exe",
+                "C:\\Program Files\\Eclipse Adoptium\\jre-17\\bin\\java.exe",
+                "C:\\Program Files (x86)\\Java\\jdk-17\\bin\\java.exe",
+                "C:\\Program Files (x86)\\Java\\jre-17\\bin\\java.exe",
+                "C:\\Program Files\\Java\\jdk-21\\bin\\java.exe",
+                "C:\\Program Files\\Eclipse Adoptium\\jdk-21\\bin\\java.exe",
+            ]
+            
+            for path in common_paths:
+                if Path(path).exists():
+                    return path
+        
+        # 默认返回 java
+        return "java"
     
     def __enter__(self):
         return self

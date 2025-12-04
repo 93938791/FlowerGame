@@ -13,7 +13,7 @@ class ProcessHelper:
     """进程管理工具类"""
     
     @staticmethod
-    def start_process(executable, args=None, env=None, hide_window=False, require_admin=False, working_dir=None):
+    def start_process(executable, args=None, env=None, hide_window=False, require_admin=False, working_dir=None, log_file=None):
         """
         启动进程
         
@@ -24,6 +24,7 @@ class ProcessHelper:
             hide_window: 是否隐藏窗口
             require_admin: 是否需要管理员权限
             working_dir: 工作目录
+            log_file: 日志文件路径，如果指定则将 stdout/stderr 重定向到该文件
         
         Returns:
             subprocess.Popen: 进程对象，如果启动失败返回None
@@ -51,20 +52,36 @@ class ProcessHelper:
                 # 注意：require_admin 参数只是一个提示，实际上需要整个 Python 程序以管理员权限运行
                 # subprocess.Popen 无法单独提升进程权限，必须父进程已经是管理员
             
+            # 配置输出流
+            stdout_target = None
+            stderr_target = None
+            log_file_handle = None
+            
+            if log_file:
+                # 将输出重定向到日志文件
+                from pathlib import Path
+                log_path = Path(log_file)
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_file_handle = open(log_path, 'w', encoding='utf-8', buffering=1)  # 行缓冲
+                stdout_target = log_file_handle
+                stderr_target = subprocess.STDOUT  # 将 stderr 合并到 stdout
+                logger.info(f"进程输出将写入日志文件: {log_file}")
+            
             # 启动进程
-            # 对于长期运行的进程，不捕获 stdout/stderr，避免缓冲区满导致进程阻塞
-            # 注意：即使 hide_window=True，也不要重定向到 DEVNULL，因为有些程序需要输出日志才能正常运行
             process = subprocess.Popen(
                 cmd,
                 startupinfo=startupinfo,
                 creationflags=creationflags,
                 env=env,  # 使用传入的环境变量
                 cwd=working_dir,  # 设置工作目录
-                # 让输出流继承父进程，不要捕获或重定向
-                stdout=None,
-                stderr=None,
+                stdout=stdout_target,
+                stderr=stderr_target,
                 stdin=subprocess.DEVNULL
             )
+            
+            # 保存日志文件句柄到进程对象，以便后续关闭
+            if log_file_handle:
+                process._log_file_handle = log_file_handle
             
             logger.info(f"进程启动成功: {executable}，PID: {process.pid}")
             return process

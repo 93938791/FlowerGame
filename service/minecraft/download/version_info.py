@@ -90,17 +90,20 @@ class VersionInfo:
         self,
         version_id: str,
         version_json: Dict[str, Any],
-        minecraft_dir: Path
+        minecraft_dir: Path,
+        custom_dir_name: Optional[str] = None
     ):
         """
         初始化版本信息
         
         Args:
-            version_id: 版本 ID
+            version_id: 版本 ID（用于文件名）
             version_json: 版本 JSON 数据
             minecraft_dir: Minecraft 根目录
+            custom_dir_name: 自定义目录名（如果不提供，则使用 version_id）
         """
-        self.version_id = version_id
+        self.version_id = version_id  # 原始版本号，用于文件名
+        self.dir_name = custom_dir_name if custom_dir_name else version_id  # 目录名
         self.data = version_json
         self.minecraft_dir = minecraft_dir
     
@@ -110,16 +113,18 @@ class VersionInfo:
         version_id: str,
         version_url: str,
         minecraft_dir: Path,
-        downloader: HttpDownloader
+        downloader: HttpDownloader,
+        custom_dir_name: Optional[str] = None
     ) -> Optional["VersionInfo"]:
         """
         从 URL 加载版本信息
         
         Args:
-            version_id: 版本 ID
+            version_id: 版本 ID（用于文件名）
             version_url: 版本 JSON URL
             minecraft_dir: Minecraft 根目录
             downloader: 下载器
+            custom_dir_name: 自定义目录名
             
         Returns:
             版本信息对象，失败返回 None
@@ -131,7 +136,7 @@ class VersionInfo:
             logger.error(f"获取版本信息失败: {version_id}")
             return None
         
-        return cls(version_id, version_json, minecraft_dir)
+        return cls(version_id, version_json, minecraft_dir, custom_dir_name)
     
     def get_client_download_info(self) -> Optional[Dict[str, Any]]:
         """获取客户端 JAR 下载信息"""
@@ -204,8 +209,8 @@ class VersionInfo:
         }
     
     def get_version_dir(self) -> Path:
-        """获取版本目录"""
-        return self.minecraft_dir / "versions" / self.version_id
+        """获取版本目录（使用自定义目录名）"""
+        return self.minecraft_dir / "versions" / self.dir_name
     
     def get_client_jar_path(self) -> Path:
         """获取客户端 JAR 路径"""

@@ -55,7 +55,9 @@ class LibraryDownloader:
         download_tasks = []
         native_tasks = []  # 需要解压的 natives
         
-        for lib in libraries:
+        logger.info(f"🔍 开始解析 {total_libs} 个依赖库...")
+        
+        for idx, lib in enumerate(libraries, 1):
             # 获取下载信息
             downloads = lib.get("downloads", {})
             
@@ -63,6 +65,11 @@ class LibraryDownloader:
             artifact = downloads.get("artifact")
             if artifact:
                 task = self._create_library_task(artifact, lib.get("name", "unknown"))
+                if task:
+                    download_tasks.append(task)
+            elif "name" in lib and "url" in lib:
+                # Fabric格式：直接有name和url字段，没有downloads结构
+                task = self._create_fabric_library_task(lib)
                 if task:
                     download_tasks.append(task)
             
@@ -148,6 +155,82 @@ class LibraryDownloader:
             save_path=save_path,
             sha1=sha1,
             description=f"Library: {lib_name}"
+        )
+    
+    def _create_fabric_library_task(
+        self,
+        lib: Dict[str, Any]
+    ) -> Optional[DownloadTask]:
+        """
+        创建 Fabric/Forge 格式的库下载任务
+        格式：{"name": "xxx", "url": "xxx"}
+        
+        Args:
+            lib: 库信息
+            
+        Returns:
+            下载任务，失败返回 None
+        """
+        name = lib.get("name")
+        url = lib.get("url")
+        
+        if not name:
+            logger.warning("库缺少 name 字段")
+            return None
+        
+        # 解析 Maven 名称获取路径
+        lib_info = self.parse_library_name(name)
+        if not lib_info:
+            logger.warning(f"库名称解析失败: {name}")
+            return None
+        
+        # 构建本地保存路径
+        group_path = lib_info["group"].replace(".", "/")
+        artifact = lib_info["artifact"]
+        version = lib_info["version"]
+        classifier = lib_info.get("classifier")
+        
+        if classifier:
+            file_name = f"{artifact}-{version}-{classifier}.jar"
+        else:
+            file_name = f"{artifact}-{version}.jar"
+        
+        relative_path = f"{group_path}/{artifact}/{version}/{file_name}"
+        save_path = self.libraries_dir / relative_path
+        
+        # 如果文件已存在，跳过
+        if save_path.exists():
+            logger.debug(f"库已存在，跳过: {name}")
+            return None
+        
+        # 构建完整的下载URL
+        if url:
+            # 如果url是完整的（以.jar结尾），直接使用
+            if url.endswith(".jar"):
+                download_url = url
+            else:
+                # 否则拼接路径
+                download_url = url.rstrip("/") + "/" + relative_path
+        else:
+            # 根据库名称判断使用哪个仓库
+            if "fabricmc" in name.lower() or "fabric" in name.lower():
+                download_url = f"https://maven.fabricmc.net/{relative_path}"
+            elif "minecraftforge" in name.lower() or "forge" in name.lower():
+                # 使用 BMCL Maven 镜像（Forge 库）
+                download_url = f"https://bmclapi2.bangbang93.com/maven/{relative_path}"
+            else:
+                # 默认使用 BMCL Maven 镜像
+                download_url = f"https://bmclapi2.bangbang93.com/maven/{relative_path}"
+        
+        logger.debug(f"库: {name}")
+        logger.debug(f"  下载URL: {download_url}")
+        logger.debug(f"  保存路径: {save_path}")
+        
+        return DownloadTask(
+            url=download_url,
+            save_path=save_path,
+            sha1=None,  # 这类库通常不提供sha1
+            description=f"Library: {name}"
         )
     
     def _extract_native(

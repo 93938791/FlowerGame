@@ -3,6 +3,7 @@ from tkinter import filedialog, ttk
 import ctypes
 from pathlib import Path
 import sys
+from config import RESOURCE_DIR
 
 class DarkTheme:
     BG_BASE = "#0f172a"
@@ -22,6 +23,15 @@ class SetupWindow:
             pass
 
         self.root = tk.Tk()
+        
+        # 设置窗口图标
+        try:
+            icon_path = RESOURCE_DIR / "logo.ico"
+            if icon_path.exists():
+                self.root.iconbitmap(str(icon_path))
+        except Exception:
+            pass
+
         self.root.withdraw()  # 先隐藏
         self.root.overrideredirect(True)  # 无标题栏
         self.root.configure(bg=DarkTheme.BG_BASE)
@@ -75,13 +85,40 @@ class SetupWindow:
         close_btn.bind("<Leave>", lambda e: e.widget.config(fg=DarkTheme.TEXT_SECONDARY))
 
         # Logo / Icon - 绑定拖拽
-        icon_label = tk.Label(
-            main_frame,
-            text="🌸",
-            font=("Segoe UI Emoji", 48),
-            bg=DarkTheme.BG_BASE,
-            fg=DarkTheme.TEXT_PRIMARY
-        )
+        try:
+            from PIL import Image, ImageTk
+            logo_path = RESOURCE_DIR / "logo.png"
+            if logo_path.exists():
+                pil_image = Image.open(str(logo_path))
+                # 调整大小
+                pil_image = pil_image.resize((100, 100), Image.Resampling.LANCZOS)
+                self.logo_img = ImageTk.PhotoImage(pil_image)
+                
+                icon_label = tk.Label(
+                    main_frame,
+                    image=self.logo_img,
+                    bg=DarkTheme.BG_BASE
+                )
+            else:
+                # 回退到 Emoji
+                icon_label = tk.Label(
+                    main_frame,
+                    text="🌸",
+                    font=("Segoe UI Emoji", 48),
+                    bg=DarkTheme.BG_BASE,
+                    fg=DarkTheme.TEXT_PRIMARY
+                )
+        except Exception as e:
+            print(f"加载 Logo 失败: {e}")
+             # 如果没有 PIL 或出错，回退到 Emoji
+            icon_label = tk.Label(
+                main_frame,
+                text="🌸",
+                font=("Segoe UI Emoji", 48),
+                bg=DarkTheme.BG_BASE,
+                fg=DarkTheme.TEXT_PRIMARY
+            )
+            
         icon_label.pack(pady=(0, 10))
         icon_label.bind("<ButtonPress-1>", self.start_move)
         icon_label.bind("<ButtonRelease-1>", self.stop_move)
