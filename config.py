@@ -7,12 +7,33 @@ import os
 import sys
 import json
 
-# 解析资源目录（兼容命令行运行与PyInstaller打包）
+# 解析资源目录（兼容命令行运行与PyInstaller/Nuitka打包）
 try:
-    BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    # PyInstaller
+    if hasattr(sys, "_MEIPASS"):
+        BASE_DIR = Path(sys._MEIPASS)
+    # Nuitka (sys.frozen is True)
+    elif getattr(sys, "frozen", False):
+        # Nuitka standalone/onefile: __file__ points to the module inside the dist/temp folder
+        # We use the parent of the current file (config.py) as the base directory
+        BASE_DIR = Path(__file__).resolve().parent
+    else:
+        # Normal Python execution
+        BASE_DIR = Path(__file__).resolve().parent
 except Exception:
     BASE_DIR = Path(__file__).resolve().parent
+
 RESOURCE_DIR = BASE_DIR / "resources"
+
+# 调试输出资源目录位置（方便排查打包问题）
+# 注意：这里使用 print 而不是 logger，因为 logger 可能还没初始化
+print(f"Environment: frozen={getattr(sys, 'frozen', False)}, meipass={hasattr(sys, '_MEIPASS')}")
+print(f"Base Dir: {BASE_DIR}")
+print(f"Resource Dir: {RESOURCE_DIR}")
+if not RESOURCE_DIR.exists():
+    print("WARNING: Resource directory does not exist!")
+else:
+    print("Resource directory found.")
 
 # 配置文件路径（存储在用户主目录，打包后也能访问）
 CONFIG_FILE = Path(os.path.expanduser("~")) / ".flowergame_config.json"

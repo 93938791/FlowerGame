@@ -155,6 +155,14 @@ class EasytierManager:
         dll_dir = RESOURCE_DIR / "easytier"
         try:
             if dll_dir.exists():
+                # 打印目录内容以供诊断
+                logger.info(f"Easytier 目录内容 ({dll_dir}):")
+                try:
+                    for f in dll_dir.iterdir():
+                        logger.info(f"  - {f.name} ({f.stat().st_size} bytes)")
+                except Exception as e:
+                    logger.warning(f"无法列出目录内容: {e}")
+
                 if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
                     os.add_dll_directory(str(dll_dir))
                     logger.info(f"添加 DLL 搜索目录: {dll_dir}")
@@ -179,12 +187,14 @@ class EasytierManager:
         working_dir = str(dll_dir)
         logger.info(f"设置工作目录: {working_dir}")
         
+        log_file = Config.LOG_DIR / "easytier.log" if Config.LOG_DIR else None
         self.process = ProcessHelper.start_process(
             Config.EASYTIER_BIN,
             args=args,
-            hide_window=False,  # 不隐藏窗口，让输出显示在控制台，方便调试
+            hide_window=True,  # 隐藏窗口
             require_admin=True,  # TUN模式需要管理员权限
-            working_dir=working_dir  # 设置工作目录
+            working_dir=working_dir,  # 设置工作目录
+            log_file=log_file
         )
         
         # 检查进程是否成功启动
@@ -195,6 +205,18 @@ class EasytierManager:
         # 验证进程是否在运行
         if not ProcessHelper.is_process_running(self.process):
             logger.error("easytier-core.exe 进程启动后立即退出")
+            
+            # 尝试读取错误日志
+            if log_file and log_file.exists():
+                try:
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        lines = f.readlines()
+                        last_lines = lines[-20:] if len(lines) > 20 else lines
+                        logger.error(f"Easytier 错误日志:\n{''.join(last_lines)}")
+                except Exception as e:
+                    logger.error(f"无法读取 Easytier 日志: {e}")
+            
+            logger.error("可能的原因：")
             logger.error("可能的原因：")
             logger.error("  1. 端口被占用（如 11010、11011、11012）- 请检查是否有其他程序占用这些端口")
             logger.error("  2. 权限不足 - 请确保以管理员权限运行")
@@ -467,7 +489,6 @@ class EasytierManager:
         try:
             # 检查easytier进程是否在运行
             if not self.process or not ProcessHelper.is_process_running(self.process):
-                logger.info("easytier 进程未运行，跳过设备发现")
                 return []
 
             # 调用 easytier-cli peer 获取peer列表
@@ -593,7 +614,6 @@ class EasytierManager:
         try:
             # 检查easytier进程是否在运行
             if not self.process or not ProcessHelper.is_process_running(self.process):
-                logger.info("easytier 进程未运行，跳过流量统计")
                 return {
                     'tx_bytes': 0,
                     'rx_bytes': 0,

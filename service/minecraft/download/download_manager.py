@@ -879,6 +879,27 @@ class MinecraftDownloadManager:
                         with open(version_json, "r", encoding="utf-8") as f:
                             version_data = json.load(f)
                         
+                        # 确保 version_data 是字典
+                        if not isinstance(version_data, dict):
+                             # 如果是列表（可能是PCL等启动器的列表缓存），尝试找到真正的版本对象
+                            if isinstance(version_data, list):
+                                logger.warning(f"版本 {version_id} JSON 格式异常（列表），尝试修复")
+                                # 简单的策略：如果列表里有字典且包含 id 字段，且 id 匹配，则使用它
+                                found = False
+                                for item in version_data:
+                                    if isinstance(item, dict) and item.get("id") == version_id:
+                                        version_data = item
+                                        found = True
+                                        break
+                                if not found:
+                                    # 如果没找到匹配的，但列表第一个是字典，尝试使用
+                                    if version_data and isinstance(version_data[0], dict):
+                                        version_data = version_data[0]
+                                    else:
+                                        raise ValueError("Version JSON is a list but contains no valid version object")
+                            else:
+                                raise ValueError(f"Version JSON format error: expected dict, got {type(version_data)}")
+
                         # 检测加载器类型
                         loader_type = self._detect_loader_type(version_data, version_id)
                         

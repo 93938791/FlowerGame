@@ -1,6 +1,7 @@
 from pathlib import Path
 import subprocess
 import os
+import platform
 import winreg
 from typing import List, Dict, Optional
 from utils.logger import logger
@@ -62,7 +63,24 @@ class JavaManager:
             # 尝试获取版本
             # 优先尝试 -version (虽然某些版本支持 --version, 但 -version 更通用)
             # 某些发行版标准输出在 stderr，有些在 stdout
-            result = subprocess.run([java_path, "-version"], capture_output=True, text=True)
+            
+            # 使用 startupinfo 隐藏窗口
+            startupinfo = None
+            creationflags = 0
+            if platform.system() == "Windows":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                # 使用 CREATE_NO_WINDOW 标志
+                creationflags = subprocess.CREATE_NO_WINDOW
+
+            result = subprocess.run(
+                [java_path, "-version"], 
+                capture_output=True, 
+                text=True, 
+                startupinfo=startupinfo,
+                creationflags=creationflags
+            )
             output = result.stderr + result.stdout # 混合输出
             
             import re

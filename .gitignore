@@ -20,6 +20,8 @@ venv.bak/
 # Build & Distribution
 build/
 dist/
+dist_nuitka/
+nuitka_debug_info.txt
 *.spec
 
 # Logs

@@ -35,8 +35,18 @@ class GameLauncher:
         """
         # 首先检查系统 PATH 中的 java
         try:
+            # 使用 startupinfo 隐藏窗口
+            startupinfo = None
+            creationflags = 0
+            if platform.system() == "Windows":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                creationflags = subprocess.CREATE_NO_WINDOW
+
             result = subprocess.run(["java", "-version"], 
-                                  capture_output=True, text=True, timeout=10)
+                                  capture_output=True, text=True, timeout=10,
+                                  startupinfo=startupinfo, creationflags=creationflags)
             if result.returncode == 0:
                 return "java"
         except (subprocess.TimeoutExpired, FileNotFoundError):

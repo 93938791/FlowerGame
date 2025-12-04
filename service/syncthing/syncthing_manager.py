@@ -56,16 +56,29 @@ class SyncthingManager:
         ]
         
         # 启动进程
+        log_file = Config.LOG_DIR / "syncthing.log" if Config.LOG_DIR else None
         self.process = ProcessHelper.start_process(
             Config.SYNCTHING_BIN,
             args=args,
             env=env,
-            hide_window=True
+            hide_window=True,
+            log_file=log_file
         )
         
         # 等待API就绪（增加超时时间）
         if not ProcessHelper.wait_for_port(Config.SYNCTHING_API_PORT, timeout=60):
-            raise RuntimeError("Syncthing启动超时")
+            # 读取日志文件最后几行
+            error_msg = "Syncthing启动超时"
+            if log_file and log_file.exists():
+                try:
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        lines = f.readlines()
+                        last_lines = lines[-20:] if len(lines) > 20 else lines
+                        error_msg += f"\n最后日志:\n{''.join(last_lines)}"
+                except Exception as e:
+                    error_msg += f"\n无法读取日志: {e}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
         
         # 等待API完全可用
         time.sleep(3)

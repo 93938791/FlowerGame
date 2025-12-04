@@ -34,7 +34,9 @@ class ProcessHelper:
                 args = []
             
             # 构建完整的命令行
-            cmd = [executable] + args
+            # 确保 executable 是字符串
+            exe_str = str(executable)
+            cmd = [exe_str] + args
             
             # 设置启动信息
             startupinfo = None

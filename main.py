@@ -47,10 +47,13 @@ def token_refresh_worker():
         import traceback
         logger.debug(traceback.format_exc())
 
-# 单例服务实例
-_auth = MicrosoftAuth()
-_syncthing = SyncthingManager()
-_easytier = EasytierManager()
+# 单例服务实例 (延迟初始化)
+_auth = None
+_syncthing = None
+_easytier = None
+_java_manager = None
+_lan_service = None
+
 # 注意：不在这里创建 _minecraft_downloader，因为需要等待用户配置目录
 
 # 下载进度管理
@@ -92,6 +95,37 @@ def get_http_client():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 初始化全局服务
+    global _auth, _syncthing, _easytier, _java_manager
+    
+    logger.info("正在初始化后台服务...")
+    
+    # 1. 认证服务
+    if _auth is None:
+        _auth = MicrosoftAuth()
+        logger.info("MicrosoftAuth 服务已初始化")
+        
+    # 2. Syncthing 服务
+    if _syncthing is None:
+        _syncthing = SyncthingManager()
+        logger.info("Syncthing 服务已初始化")
+        
+    # 3. Easytier 服务
+    if _easytier is None:
+        _easytier = EasytierManager()
+        logger.info("Easytier 服务已初始化")
+        # 启动 NAT 检测 (在后台线程中运行)
+        try:
+            _easytier.nat_detector.start_detection()
+        except Exception as e:
+            logger.warning(f"启动 NAT 检测失败: {e}")
+        
+    # 4. Java 环境管理器
+    if _java_manager is None:
+        from service.java_environment import JavaManager
+        _java_manager = JavaManager()
+        logger.info("JavaManager 服务已初始化")
+
     # 启动时：启动后台推送任务
     task = asyncio.create_task(broadcast_network_status())
     logger.info("后台 WebSocket 推送任务已启动")
@@ -1163,8 +1197,9 @@ def api_sync_status():
          return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 # ==================== Java 环境 API ====================
-from service.java_environment import JavaManager
-_java_manager = JavaManager()
+# JavaManager 已在 lifespan 中初始化
+# from service.java_environment import JavaManager
+# _java_manager = JavaManager()
 
 @app.get("/api/java/info")
 def api_java_info():
@@ -2256,7 +2291,8 @@ def run_web_server():
 
 def open_browser():
     # 打开公共Web控制台
-    url = Config.WEB_CONSOLE_URL
+    # url = Config.WEB_CONSOLE_URL
+    url = "https://mc.765.run"
     logger.info(f"正在打开Web控制台: {url}")
     try:
         webbrowser.open(url)
@@ -2522,6 +2558,88 @@ def start_gui():
 
 
 if __name__ == "__main__":
+    # ==================== Nuitka 路径调试 ====================
+    try:
+        import sys
+        import os
+        from pathlib import Path
+        
+        # 确定日志文件路径：优先在 exe 同级目录
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.getcwd()
+            
+        debug_file = os.path.join(base_dir, "nuitka_debug_info.txt")
+        
+        with open(debug_file, "w", encoding="utf-8") as f:
+            f.write(f"Python Version: {sys.version}\n")
+            f.write(f"sys.executable: {sys.executable}\n")
+            f.write(f"sys.argv: {sys.argv}\n")
+            f.write(f"os.getcwd(): {os.getcwd()}\n")
+            f.write(f"sys.frozen: {getattr(sys, 'frozen', 'Not Set')}\n")
+            f.write(f"__file__: {__file__ if '__file__' in globals() else 'Not Set'}\n")
+            
+            if getattr(sys, 'frozen', False):
+                 f.write(f"sys._MEIPASS: {getattr(sys, '_MEIPASS', 'Not Set')}\n")
+            
+            # 检查 config.py 中的路径逻辑
+            try:
+                # 模拟 config.py 的逻辑
+                if hasattr(sys, "_MEIPASS"):
+                    sim_base = Path(sys._MEIPASS)
+                    f.write(f"Simulated BASE_DIR (PyInstaller): {sim_base}\n")
+                elif getattr(sys, "frozen", False):
+                    # Nuitka onefile/standalone
+                    # 注意：这里我们直接用 __file__，看看它在 Nuitka 中是什么
+                    if '__file__' in globals():
+                        sim_base = Path(__file__).resolve().parent
+                        f.write(f"Simulated BASE_DIR (Nuitka from main.py __file__): {sim_base}\n")
+                    else:
+                        f.write("Simulated BASE_DIR (Nuitka): __file__ is not defined\n")
+                        sim_base = Path(os.getcwd()) # Fallback
+                else:
+                    sim_base = Path(__file__).resolve().parent
+                    f.write(f"Simulated BASE_DIR (Normal): {sim_base}\n")
+                
+                # 检查 resources 目录
+                if 'sim_base' in locals():
+                    f.write(f"Listing all files in BASE_DIR: {sim_base}\n")
+                    for root, dirs, files in os.walk(sim_base):
+                        for name in files:
+                            f.write(f"  FILE: {os.path.join(root, name)}\n")
+                        for name in dirs:
+                            f.write(f"  DIR:  {os.path.join(root, name)}\n")
+
+                    res_dir = sim_base / "resources"
+                    f.write(f"Simulated RESOURCE_DIR: {res_dir}\n")
+                    f.write(f"Resource dir exists: {res_dir.exists()}\n")
+                    
+                    if res_dir.exists():
+                        f.write(f"Resource dir content: {[p.name for p in res_dir.iterdir()]}\n")
+                        
+                        # 检查 easytier
+                        et_dir = res_dir / "easytier"
+                        if et_dir.exists():
+                            f.write(f"Easytier dir content: {[p.name for p in et_dir.iterdir()]}\n")
+                        else:
+                            f.write("Easytier dir NOT found inside resources\n")
+                    else:
+                        # 如果 resources 不在 sim_base，尝试在 sys.executable 旁边找（Standalone 模式）
+                        exe_dir = Path(sys.executable).parent
+                        res_dir_exe = exe_dir / "resources"
+                        f.write(f"Checking resources next to exe: {res_dir_exe}\n")
+                        f.write(f"Exists: {res_dir_exe.exists()}\n")
+                        if res_dir_exe.exists():
+                             f.write(f"Content: {[p.name for p in res_dir_exe.iterdir()]}\n")
+
+            except Exception as e:
+                f.write(f"Error checking paths: {e}\n")
+
+    except Exception as e:
+        # 哪怕出错也不要崩溃，尽量忽略
+        pass
+
     # ==================== 权限检查 ====================
     import ctypes
     try:
@@ -2585,7 +2703,11 @@ if __name__ == "__main__":
     logger.info(f"🎮 Minecraft 目录: {Config.MINECRAFT_DIR}")
     
     # ==================== 启动 Web 服务 ====================
+    # 确保日志能输出到文件
+    sys.stdout = open(Config.LOG_DIR / "stdout.log", "a", encoding="utf-8", buffering=1)
+    sys.stderr = open(Config.LOG_DIR / "stderr.log", "a", encoding="utf-8", buffering=1)
+
     t = threading.Thread(target=run_web_server, daemon=True)
     t.start()
-    ProcessHelper.wait_for_port(Config.WEB_PORT, timeout=30)
+    # ProcessHelper.wait_for_port(Config.WEB_PORT, timeout=30) # 移除阻塞等待，让界面尽快显示
     start_gui()
