@@ -80,34 +80,40 @@ class MirrorManager:
     
     def get_download_url(self, url: str) -> str:
         """
-        获取下载 URL（根据当前镜像源自动替换）
+        获取下载 URL（根据镜像源自动替换，始终优先国内镜像）
         
         Args:
             url: 原始 URL
             
         Returns:
-            替换后的镜像 URL
+            替换后的镜像 URL（若无匹配则返回原始 URL）
         """
         if not url:
             return url
-            
-        # 官方源不需要替换
-        if self.current_source == MirrorSource.OFFICIAL:
-            return url
-            
-        # 检查域名映射
-        mapping = MirrorConfig.DOMAIN_MAPPING[self.current_source]
-        prefix_mapping = MirrorConfig.PATH_PREFIX_MAPPING[self.current_source]
-        
-        for original_domain, mirror_domain in mapping.items():
-            if original_domain in url:
-                # 获取前缀
-                prefix = prefix_mapping.get(original_domain, "")
-                
-                # 替换域名
-                new_url = url.replace(original_domain, mirror_domain + prefix)
-                return new_url
-        
+
+        # 构造候选镜像源顺序：当前源优先，其次 BMCLAPI、MCBBS、最后官方
+        candidates: List[MirrorSource] = []
+        # 当前源优先
+        candidates.append(self.current_source)
+        # 追加国内镜像源（去重）
+        for s in (MirrorSource.BMCLAPI, MirrorSource.MCBBS):
+            if s not in candidates:
+                candidates.append(s)
+        # 最后尝试官方源（通常不做映射）
+        if MirrorSource.OFFICIAL not in candidates:
+            candidates.append(MirrorSource.OFFICIAL)
+
+        # 依次尝试域名映射，命中即返回
+        for source in candidates:
+            mapping = MirrorConfig.DOMAIN_MAPPING.get(source, {})
+            prefix_mapping = MirrorConfig.PATH_PREFIX_MAPPING.get(source, {})
+
+            for original_domain, mirror_domain in mapping.items():
+                if original_domain in url:
+                    prefix = prefix_mapping.get(original_domain, "")
+                    return url.replace(original_domain, mirror_domain + prefix)
+
+        # 未命中任何映射，返回原始 URL
         return url
 
     def switch_to_fallback(self):

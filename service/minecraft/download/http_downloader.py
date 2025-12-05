@@ -158,7 +158,13 @@ class HttpDownloader:
         download_url = url
         if use_mirror and self.mirror_manager:
             download_url = self.mirror_manager.get_download_url(url)
-        logger.info(f"下载源: {self.mirror_manager.current_source.name if self.mirror_manager else 'unknown'}, URL: {download_url}")
+        # 检测实际使用的镜像源（基于最终 URL）
+        actual_source = (
+            MirrorSource.BMCLAPI if "bmclapi2.bangbang93.com" in download_url else
+            MirrorSource.MCBBS if "download.mcbbs.net" in download_url else
+            MirrorSource.OFFICIAL
+        )
+        logger.info(f"下载源: {actual_source.name}, URL: {download_url}")
             
         # 4. 执行下载（带重试）
         max_retries = 5
