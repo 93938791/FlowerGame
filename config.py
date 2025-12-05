@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import sys
 import json
+import hashlib
 
 # 解析资源目录（兼容命令行运行与PyInstaller/Nuitka打包）
 try:
@@ -142,7 +143,33 @@ class Config:
     # Syncthing配置
     SYNCTHING_BIN = RESOURCE_DIR / "syncthing" / "syncthing.exe"
     SYNCTHING_API_PORT = 8384
-    SYNCTHING_API_KEY = "flowergame-syncthing-2025"
+    # Syncthing API Key 派生策略
+    # mode 可选：'device'（设备唯一）或 'network'（网络统一）
+    SYNCTHING_API_KEY_MODE = os.environ.get("FG_ST_APIKEY_MODE", "device")
+    # 用于派生的盐（建议设置为网络级别常量或环境变量）
+    SYNCTHING_API_KEY_SALT = os.environ.get("FG_ST_APIKEY_SALT", "flowergame-2025")
+    
+    @classmethod
+    def _derive_api_key(cls):
+        """派生 Syncthing API Key（默认使用 SHA-256，返回十六进制字符串）"""
+        # 优先使用环境变量覆盖（便于打包与运维）
+        env_key = os.environ.get("STGUIAPIKEY")
+        if env_key:
+            return env_key
+        
+        # 设备唯一：使用主机名 + 盐
+        if (cls.SYNCTHING_API_KEY_MODE or "").lower() == "device":
+            base = f"device|{cls.HOSTNAME}|{cls.SYNCTHING_API_KEY_SALT}"
+            return hashlib.sha256(base.encode("utf-8")).hexdigest()
+        
+        # 网络统一：使用 EasyTier 房间名 + 密码 + 盐
+        if (cls.SYNCTHING_API_KEY_MODE or "").lower() == "network":
+            base = f"network|{cls.EASYTIER_NETWORK_NAME}|{cls.EASYTIER_NETWORK_SECRET}|{cls.SYNCTHING_API_KEY_SALT}"
+            return hashlib.sha256(base.encode("utf-8")).hexdigest()
+        
+        # 回退：静态默认值（不推荐）
+        return "flowergame-syncthing-2025"
+    
     SYNC_FOLDER_ID = "flowergame-sync"
     SYNC_FOLDER_LABEL = "FlowerGame 同步文件夹"
     
@@ -182,3 +209,6 @@ class Config:
     def is_configured(cls):
         """检查是否已配置目录"""
         return cls.get_main_dir() is not None
+        
+# 在类定义完成后，派生并设置 Syncthing API Key
+Config.SYNCTHING_API_KEY = Config._derive_api_key()

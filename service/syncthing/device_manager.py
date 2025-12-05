@@ -65,8 +65,8 @@ class DeviceManager:
                     current_addresses = device.get("addresses", [])
                     
                     # 检查是否需要更新地址
-                    if tcp_address not in current_addresses:
-                        device["addresses"] = [tcp_address, "dynamic"]
+                    if tcp_address not in current_addresses or current_addresses != [tcp_address]:
+                        device["addresses"] = [tcp_address]
                         logger.info(f"更新已存在设备地址: {tcp_address}")
                         
                         # 保存配置
@@ -81,16 +81,15 @@ class DeviceManager:
         
         # 设备不存在，需要添加
         if not device_exists:
-            # 使用虚拟IP地址
-            addresses = ["dynamic"]  # 默认使用dynamic作为备用
-            
-            if device_address:
-                # 配置虚拟IP地址
-                tcp_address = f"tcp://{device_address}:22000"
-                addresses = [tcp_address, "dynamic"]  # 虚拟IP优先，dynamic备用
-                logger.info(f"使用虚拟IP地址: {tcp_address}")
-            else:
-                logger.warning("未提供虚拟IP地址，使用dynamic发现")
+            # 必须提供虚拟IP地址，严格依赖 EasyTier 网络
+            if not device_address:
+                logger.warning("未提供虚拟IP地址，严格模式下不添加设备")
+                return False
+
+            # 配置仅虚拟IP地址（不使用 dynamic）
+            tcp_address = f"tcp://{device_address}:22000"
+            addresses = [tcp_address]
+            logger.info(f"使用虚拟IP地址: {tcp_address}")
             
             # 添加新设备
             new_device = {
@@ -112,7 +111,7 @@ class DeviceManager:
             logger.info(f"✅ 设备配置详情:")
             logger.info(f"   设备ID: {device_id}")
             logger.info(f"   设备名称: {device_name or device_id[:7]}")
-            logger.info(f"   虚拟IP: {device_address or 'N/A'}")
+            logger.info(f"   虚拟IP: {device_address}")
             logger.info(f"   连接地址: {addresses}")
             
             return self.config_manager.set_config(config, async_mode=async_mode)

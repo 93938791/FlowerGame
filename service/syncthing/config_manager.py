@@ -155,42 +155,33 @@ class ConfigManager:
             return _do_set_config()
     
     def disable_discovery(self):
-        """禁用Syncthing的全局发现和中继，保留本地发现"""
-    def configure_listen_address(self):
-        """配置监听地址，确保监听所有网络接口（Syncthing v2.0+）"""
+        """禁用 Syncthing 的本地/全局发现与中继，强制仅走配置地址"""
         try:
             config = self.get_config()
             if not config:
                 logger.warning("无法获取配置，跳过禁用发现")
                 return False
             
-            # 修改前记录原始状态
             options = config.get('options', {})
             original_local = options.get('localAnnounceEnabled', True)
             original_global = options.get('globalAnnounceEnabled', True)
             original_relay = options.get('relaysEnabled', True)
             
-            # 禁用所有自动发现，强制使用配置的虚拟IP地址
-            options['localAnnounceEnabled'] = False  # 禁用本地发现（避免绕过SOCKS5）
-            options['globalAnnounceEnabled'] = False  # 禁用全局发现（互联网）
-            options['relaysEnabled'] = False  # 禁用中继服务器
-            options['natEnabled'] = False  # 禁用NAT穿透
-            options['urAccepted'] = -1  # 禁用匿名使用统计
+            options['localAnnounceEnabled'] = False
+            options['globalAnnounceEnabled'] = False
+            options['relaysEnabled'] = False
+            options['natEnabled'] = False
+            options['urAccepted'] = -1
             
             config['options'] = options
-            
-            # 同步保存配置（等待完成）
             result = self.set_config(config, async_mode=False)
-            
             if result:
-                logger.info(f"✅ 已配置Syncthing发现：本地发现={original_local}→False, 全局发现={original_global}→False, 中继={original_relay}→False")
-                logger.info("🚫 已禁用所有自动发现，强制使用配置的虚拟IP地址")
+                logger.info(f"✅ 已禁用发现：local={original_local}→False, global={original_global}→False, relay={original_relay}→False")
             else:
-                logger.warning("配置发现失败")
-            
+                logger.warning("禁用发现失败")
             return result
         except Exception as e:
-            logger.error(f"配置发现失败: {e}")
+            logger.error(f"禁用发现失败: {e}")
             return False
     
     def enable_default_auto_accept(self):
@@ -224,25 +215,17 @@ class ConfigManager:
                 logger.warning("无法获取配置，跳过配置监听地址")
                 return False
             
-            # 检查options.listenAddresses配置
             options = config.get('options', {})
             listen_addresses = options.get('listenAddresses', [])
-            
-            # 默认监听地址：所有接口的 22000 端口
             default_address = "tcp://0.0.0.0:22000"
             
-            # 检查是否已配置
             if default_address not in listen_addresses:
-                # 添加默认监听地址
                 if not listen_addresses:
                     listen_addresses = [default_address]
                 elif listen_addresses[0] != default_address:
                     listen_addresses.insert(0, default_address)
-                
                 options['listenAddresses'] = listen_addresses
                 config['options'] = options
-                
-                # 保存配置
                 result = self.set_config(config, async_mode=False)
                 if result:
                     logger.info(f"✅ 已配置监听地址: {default_address}")

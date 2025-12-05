@@ -230,15 +230,19 @@ class SyncthingManager:
         Returns:
             list: 分享目录列表 (已过滤本地存在的文件夹，并按ID去重)
         """
-        # 1. 获取本地已存在的文件夹ID集合
+        # 1. 获取本地已存在的文件夹ID集合（未启动时跳过，避免REST连接被拒绝）
         local_folder_ids = set()
-        try:
-            local_config = self.config_manager.get_config()
-            if local_config and 'folders' in local_config:
-                for f in local_config['folders']:
-                    local_folder_ids.add(f['id'])
-        except Exception as e:
-            logger.warning(f"获取本地配置失败: {e}")
+        local_config = None
+        if self.is_running():
+            try:
+                local_config = self.config_manager.get_config()
+                if local_config and 'folders' in local_config:
+                    for f in local_config['folders']:
+                        local_folder_ids.add(f['id'])
+            except Exception as e:
+                logger.warning(f"获取本地配置失败: {e}")
+        else:
+            logger.info("Syncthing 未运行，扫描远程分享时跳过本地配置过滤")
 
         # 2. 扫描并聚合远程分享
         # 使用字典按folder_id去重
@@ -264,12 +268,10 @@ class SyncthingManager:
                         if not folder_id:
                             continue
                         
-                        # 策略1: 过滤掉本地已经存在的文件夹
-                        # 只要本地有了，就不在"网络分享"中显示（无论是否连接）
-                        # 因为如果本地有了，要么在"我的同步"里，要么就是我创建的
-                        if folder_id in local_folder_ids:
+                        # 策略1: 过滤掉本地已经存在的文件夹（仅当本地配置可用时）
+                        if local_config and folder_id in local_folder_ids:
                             continue
-                            
+                        
                         # 策略2: 去重
                         # 如果这个ID已经扫描到了，我们只需要更新它的来源信息（可选）
                         # 这里简单处理：保留第一个发现的，或者保留元数据最完整的
@@ -385,3 +387,10 @@ class SyncthingManager:
     def add_folder(self, folder_path, folder_id=None, folder_label=None, devices=None, watcher_delay=10, paused=True, async_mode=True):
         """添加同步文件夹"""
         return self.folder_manager.add_folder(folder_path, folder_id, folder_label, devices, watcher_delay, paused, async_mode)
+
+    def get_traffic_stats(self):
+        """获取Syncthing流量统计（若不可用返回None）"""
+        try:
+            return self.device_manager.get_traffic_stats()
+        except Exception:
+            return None
