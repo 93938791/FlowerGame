@@ -72,15 +72,16 @@ class EventManager:
                     if event_id > last_event_id:
                         last_event_id = event_id
                     
-                    # 关注文件下载完成事件
-                    if event_type in ['ItemFinished', 'FolderSummary', 'DownloadProgress']:
-                        logger.debug(f"Syncthing事件: {event_type}")
-                        # 调用所有注册的回调
-                        for callback in self.event_callbacks:
-                            try:
-                                callback(event_type, event_data)
-                            except Exception as e:
-                                logger.error(f"事件回调执行失败: {e}")
+                    # 调试输出关键事件类型（设备相关、下载相关等）
+                    if event_type in ['DeviceConnected', 'DeviceDisconnected', 'DeviceDiscovered', 'LoginAttempt', 'ConfigSaved', 'ItemFinished', 'FolderSummary', 'DownloadProgress']:
+                        logger.debug(f"Syncthing事件: {event_type} -> {event_data}")
+                    
+                    # 调用所有注册的回调（不筛选类型，交由上层处理）
+                    for callback in self.event_callbacks:
+                        try:
+                            callback(event_type, event_data)
+                        except Exception as e:
+                            logger.debug(f"事件回调失败: {e}")
                 
             except requests.exceptions.Timeout:
                 # 超时是正常的，long polling会在没有事件时超时

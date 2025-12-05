@@ -160,8 +160,7 @@ class HttpDownloader:
             download_url = self.mirror_manager.get_download_url(url)
         # 检测实际使用的镜像源（基于最终 URL）
         actual_source = (
-            MirrorSource.BMCLAPI if "bmclapi2.bangbang93.com" in download_url else
-            MirrorSource.MCBBS if "download.mcbbs.net" in download_url else
+            MirrorSource.BMCLAPI if "bmclapi2.bangbang93.com" in download_url or "bmclapi.bangbang93.com" in download_url else
             MirrorSource.OFFICIAL
         )
         logger.info(f"下载源: {actual_source.name}, URL: {download_url}")
@@ -181,7 +180,19 @@ class HttpDownloader:
                 # 使用流式下载
                 with self.client.stream("GET", download_url, follow_redirects=True, timeout=60.0) as response:
                     if response.status_code != 200:
-                        # 如果是 404 或其他错误，尝试切换镜像源
+                        # 如果是 404，且当前为 BMCLAPI，尝试对象/包路径互换
+                        if response.status_code == 404 and actual_source == MirrorSource.BMCLAPI and use_mirror:
+                            alt_url = None
+                            if "/v1/packages/" in download_url:
+                                alt_url = download_url.replace("/v1/packages/", "/v1/objects/")
+                            elif "/v1/objects/" in download_url:
+                                alt_url = download_url.replace("/v1/objects/", "/v1/packages/")
+                            if alt_url and alt_url != download_url:
+                                logger.info(f"尝试备用路径: {alt_url}")
+                                download_url = alt_url
+                                continue
+
+                        # 其他错误或继续失败：切换镜像源
                         if self.mirror_manager and use_mirror:
                             logger.warning(f"下载失败 {response.status_code}，尝试切换镜像源...")
                             if self.mirror_manager.switch_to_fallback():

@@ -106,6 +106,8 @@ class SyncthingManager:
         self.config_manager.enable_default_auto_accept()
         
         # 启动事件监听
+        # 注册设备自动添加的事件处理
+        self.event_manager.register_callback(self._on_syncthing_event)
         self.event_manager.start_listener()
         
         return True
@@ -317,13 +319,26 @@ class SyncthingManager:
             }
         }
         
+        devices = []
+        try:
+            config = self.config_manager.get_config()
+            if config and 'devices' in config:
+                for d in config['devices']:
+                    dev_id = d.get('deviceID')
+                    if dev_id:
+                        devices.append(dev_id)
+        except Exception:
+            pass
+
         return self.folder_manager.add_folder(
             folder_id=folder_id,
             folder_label=label,
             folder_path=str(save_path),
-            folder_type="sendreceive", # 双向同步
+            folder_type="sendreceive",
+            devices=devices,
             paused=False,
-            versioning=versioning
+            versioning=versioning,
+            async_mode=False
         )
 
     def connect_share(self, device_id, folder_id, local_path, folder_label=None, device_ip=None, device_name=None):
@@ -394,3 +409,63 @@ class SyncthingManager:
             return self.device_manager.get_traffic_stats()
         except Exception:
             return None
+
+    # ==================== 事件处理 ====================
+    def _on_syncthing_event(self, event_type, data):
+        """处理 Syncthing 事件，实现自动添加未知设备"""
+        try:
+            # 处理设备请求被拒绝事件（通常是未添加的设备尝试连接）
+            if event_type == 'DeviceRejected':
+                dev_id = data.get('device')
+                dev_name = data.get('name') or dev_id[:7]
+                
+                if dev_id:
+                    logger.info(f"发现新设备请求 (DeviceRejected): {dev_id} ({dev_name})")
+                    # 按照需求使用 dynamic 地址并开启自动分享
+                    self.device_manager.add_device(dev_id, device_name=dev_name, device_address="dynamic", async_mode=False)
+                return
+
+            # 设备连接/发现事件：自动添加未知设备
+            if event_type in ['DeviceConnected', 'DeviceDiscovered', 'LoginAttempt']:
+                # 尝试从事件数据提取设备ID与地址
+                dev_id = data.get('id') or data.get('device') or data.get('deviceID')
+                addr = data.get('addr') or data.get('address') or ''
+
+                if not dev_id:
+                    return
+
+                # 检查设备是否已经存在
+                config = self.config_manager.get_config()
+                exists = False
+                if config:
+                    for d in config.get('devices', []):
+                        if d.get('deviceID') == dev_id:
+                            exists = True
+                            break
+
+                if exists:
+                    return
+
+                # 从地址中提取IPv4，并按虚拟IP地址构造连接地址
+                ip = None
+                try:
+                    # 可能形如 "tcp://10.126.126.2:22000" 或 "10.126.126.2:22000"
+                    txt = str(addr)
+                    if '://' in txt:
+                        txt = txt.split('://', 1)[1]
+                    ip_port = txt.split('/')[-1]
+                    ip_part = ip_port.split(':')[0]
+                    if ip_part and ip_part.count('.') == 3:
+                        ip = ip_part
+                except Exception:
+                    pass
+
+                if not ip:
+                    # 无法从事件获取地址时，不进行自动添加（避免添加到非虚拟网卡）
+                    return
+
+                # 自动添加设备，仅使用虚拟IP地址
+                logger.info(f"自动添加未知设备: {dev_id[:7]}... @ {ip}")
+                self.device_manager.add_device(dev_id, device_name=dev_id[:7], device_address=ip, async_mode=False)
+        except Exception as e:
+            logger.debug(f"事件处理失败: {e}")

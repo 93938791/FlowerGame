@@ -145,7 +145,7 @@ class Config:
     SYNCTHING_API_PORT = 8384
     # Syncthing API Key 派生策略
     # mode 可选：'device'（设备唯一）或 'network'（网络统一）
-    SYNCTHING_API_KEY_MODE = os.environ.get("FG_ST_APIKEY_MODE", "device")
+    SYNCTHING_API_KEY_MODE = os.environ.get("FG_ST_APIKEY_MODE", "network")
     # 用于派生的盐（建议设置为网络级别常量或环境变量）
     SYNCTHING_API_KEY_SALT = os.environ.get("FG_ST_APIKEY_SALT", "flowergame-2025")
     

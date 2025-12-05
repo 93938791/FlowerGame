@@ -298,8 +298,46 @@ class FolderManager:
                 headers=self.headers,
                 timeout=5
             )
+            # 忽略文件夹不存在或未运行的错误
+            if resp.status_code == 404:
+                return None
+                
             resp.raise_for_status()
-            return resp.json()
+            status = resp.json()
+
+            # 自动修复 folder marker missing 错误
+            if status.get("state") == "error" and "folder marker missing" in status.get("error", ""):
+                logger.warning(f"检测到文件夹 {folder_id} 缺少 .stfolder 标记，尝试自动修复...")
+                
+                # 获取文件夹路径
+                folder_config = self.get_folder(folder_id)
+                if folder_config:
+                    folder_path = Path(folder_config.get('path', ''))
+                    if folder_path.exists():
+                        marker = folder_path / ".stfolder"
+                        if not marker.exists():
+                            try:
+                                marker.mkdir(exist_ok=True)
+                                logger.info(f"✅ 已重新创建标记文件夹: {marker}")
+                                
+                                # 触发重新扫描
+                                requests.post(
+                                    f"{self.api_url}/rest/db/scan",
+                                    params={"folder": folder_id},
+                                    headers=self.headers,
+                                    timeout=5
+                                )
+                                logger.info("✅ 已触发重新扫描")
+                                
+                                # 返回修复中的状态
+                                status["state"] = "scanning"
+                                status["error"] = ""
+                            except Exception as ex:
+                                logger.error(f"无法创建标记文件夹: {ex}")
+                    else:
+                        logger.error(f"文件夹路径不存在: {folder_path}")
+            
+            return status
         except Exception as e:
             logger.error(f"获取文件夹状态失败: {e}")
             return None

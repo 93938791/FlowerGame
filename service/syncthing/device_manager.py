@@ -81,15 +81,20 @@ class DeviceManager:
         
         # 设备不存在，需要添加
         if not device_exists:
-            # 必须提供虚拟IP地址，严格依赖 EasyTier 网络
+            # 必须提供地址
             if not device_address:
-                logger.warning("未提供虚拟IP地址，严格模式下不添加设备")
+                logger.warning("未提供地址，无法添加设备")
                 return False
 
-            # 配置仅虚拟IP地址（不使用 dynamic）
-            tcp_address = f"tcp://{device_address}:22000"
-            addresses = [tcp_address]
-            logger.info(f"使用虚拟IP地址: {tcp_address}")
+            # 处理 dynamic 地址
+            if device_address == "dynamic":
+                addresses = ["dynamic"]
+                logger.info("使用动态地址: dynamic")
+            else:
+                # 配置仅虚拟IP地址
+                tcp_address = f"tcp://{device_address}:22000"
+                addresses = [tcp_address]
+                logger.info(f"使用虚拟IP地址: {tcp_address}")
             
             # 添加新设备
             new_device = {

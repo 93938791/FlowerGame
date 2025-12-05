@@ -9,7 +9,6 @@ from enum import Enum
 class MirrorSource(Enum):
     """镜像源类型"""
     BMCLAPI = "bmclapi"  # BMCLAPI 镜像（国内）
-    MCBBS = "mcbbs"      # MCBBS 镜像（国内）
     OFFICIAL = "official"  # 官方源
 
 
@@ -19,7 +18,6 @@ class MirrorConfig:
     # 版本清单 URL
     VERSION_MANIFEST_URLS = {
         MirrorSource.BMCLAPI: "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json",
-        MirrorSource.MCBBS: "https://download.mcbbs.net/mc/game/version_manifest_v2.json",
         MirrorSource.OFFICIAL: "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
     }
     
@@ -27,23 +25,16 @@ class MirrorConfig:
     DOMAIN_MAPPING = {
         MirrorSource.BMCLAPI: {
             "piston-meta.mojang.com": "bmclapi2.bangbang93.com",
-            "piston-data.mojang.com": "bmclapi2.bangbang93.com",
-            "launcher.mojang.com": "bmclapi2.bangbang93.com",
             "launchermeta.mojang.com": "bmclapi2.bangbang93.com",
+            "launcher.mojang.com": "bmclapi2.bangbang93.com",
             "libraries.minecraft.net": "bmclapi2.bangbang93.com/maven",
             "resources.download.minecraft.net": "bmclapi2.bangbang93.com/assets",
             "meta.fabricmc.net": "bmclapi2.bangbang93.com/fabric-meta",
             "maven.fabricmc.net": "bmclapi2.bangbang93.com/maven",
             "maven.minecraftforge.net": "bmclapi2.bangbang93.com/maven",
-            "files.minecraftforge.net/maven": "bmclapi2.bangbang93.com/maven"
-        },
-        MirrorSource.MCBBS: {
-            "piston-meta.mojang.com": "download.mcbbs.net",
-            "piston-data.mojang.com": "download.mcbbs.net",
-            "launcher.mojang.com": "download.mcbbs.net",
-            "launchermeta.mojang.com": "download.mcbbs.net",
-            "libraries.minecraft.net": "download.mcbbs.net/maven",
-            "resources.download.minecraft.net": "download.mcbbs.net/assets"
+            "files.minecraftforge.net/maven": "bmclapi2.bangbang93.com/maven",
+            "authlib-injector.yushi.moe": "bmclapi2.bangbang93.com/mirrors/authlib-injector",
+            "maven.neoforged.net": "bmclapi2.bangbang93.com/maven"
         },
         MirrorSource.OFFICIAL: {}  # 官方源不做映射
     }
@@ -52,13 +43,17 @@ class MirrorConfig:
     PATH_PREFIX_MAPPING = {
         MirrorSource.BMCLAPI: {
             "piston-meta.mojang.com": "",
-            "piston-data.mojang.com": "/openbmclapi",
-            "launcher.mojang.com": "",
             "launchermeta.mojang.com": "",
+            "launcher.mojang.com": "",
             "libraries.minecraft.net": "",
-            "resources.download.minecraft.net": ""
+            "resources.download.minecraft.net": "",
+            "meta.fabricmc.net": "",
+            "maven.fabricmc.net": "",
+            "maven.minecraftforge.net": "",
+            "files.minecraftforge.net/maven": "",
+            "authlib-injector.yushi.moe": "",
+            "maven.neoforged.net": ""
         },
-        MirrorSource.MCBBS: {},
         MirrorSource.OFFICIAL: {}
     }
 
@@ -68,7 +63,7 @@ class MirrorManager:
     
     def __init__(self):
         self.current_source = MirrorSource.BMCLAPI  # 默认使用 BMCLAPI
-        self.fallback_sources = [MirrorSource.MCBBS, MirrorSource.OFFICIAL] # 备用源列表
+        self.fallback_sources = []
     
     def set_source(self, source: MirrorSource):
         """设置镜像源"""
@@ -80,40 +75,37 @@ class MirrorManager:
     
     def get_download_url(self, url: str) -> str:
         """
-        获取下载 URL（根据镜像源自动替换，始终优先国内镜像）
-        
-        Args:
-            url: 原始 URL
-            
-        Returns:
-            替换后的镜像 URL（若无匹配则返回原始 URL）
+        获取下载 URL（根据当前镜像源自动替换）
+        优先使用国内镜像；当当前源为 OFFICIAL 时原样返回，以便真正回退到官方源。
         """
         if not url:
             return url
 
-        # 构造候选镜像源顺序：当前源优先，其次 BMCLAPI、MCBBS、最后官方
-        candidates: List[MirrorSource] = []
-        # 当前源优先
-        candidates.append(self.current_source)
-        # 追加国内镜像源（去重）
-        for s in (MirrorSource.BMCLAPI, MirrorSource.MCBBS):
-            if s not in candidates:
-                candidates.append(s)
-        # 最后尝试官方源（通常不做映射）
-        if MirrorSource.OFFICIAL not in candidates:
-            candidates.append(MirrorSource.OFFICIAL)
+        # 当前源明确为官方时，不做任何替换，确保回退生效
+        if self.current_source == MirrorSource.OFFICIAL:
+            return url
 
-        # 依次尝试域名映射，命中即返回
-        for source in candidates:
-            mapping = MirrorConfig.DOMAIN_MAPPING.get(source, {})
-            prefix_mapping = MirrorConfig.PATH_PREFIX_MAPPING.get(source, {})
+        # Liteloader 特例：直接替换为 BMCL 路径（更换域名与固定路径）
+        if "dl.liteloader.com/versions/versions.json" in url:
+            return url.replace("http://dl.liteloader.com/versions/versions.json",
+                               "https://bmclapi.bangbang93.com/maven/com/mumfrey/liteloader/versions.json")
 
-            for original_domain, mirror_domain in mapping.items():
-                if original_domain in url:
-                    prefix = prefix_mapping.get(original_domain, "")
-                    return url.replace(original_domain, mirror_domain + prefix)
+        # 检查域名映射
+        mapping = MirrorConfig.DOMAIN_MAPPING.get(self.current_source, {})
+        prefix_mapping = MirrorConfig.PATH_PREFIX_MAPPING.get(self.current_source, {})
 
-        # 未命中任何映射，返回原始 URL
+        for original_domain, mirror_domain in mapping.items():
+            if original_domain in url:
+                prefix = prefix_mapping.get(original_domain, "")
+                new_url = url.replace(original_domain, mirror_domain + prefix)
+
+                # Neoforge 特例：移除 releases 路径段
+                if self.current_source == MirrorSource.BMCLAPI:
+                    if original_domain == "maven.neoforged.net" and "/releases/" in new_url:
+                        new_url = new_url.replace("/maven/releases/", "/maven/")
+
+                return new_url
+
         return url
 
     def switch_to_fallback(self):

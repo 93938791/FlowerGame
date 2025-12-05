@@ -27,6 +27,9 @@ def build():
         # 为了防报毒，有时候有控制台反而好一点，但用户体验不好。
         # 这里暂时加上 --noconsole (即 --windowed)，因为用户说了是 UI 相关的
         '--noconsole',
+        # 显式设置输出与工作目录，避免与前端 FlowerGameUI 的 dist 冲突
+        '--distpath=dist_py',
+        '--workpath=build_py'
     ]
 
     # 添加数据文件

@@ -1345,6 +1345,112 @@ def api_pick_file():
         logger.error(f"选择文件失败: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+@app.post("/api/system/select-folder")
+def api_system_select_folder(payload: Dict = Body(...)):
+    try:
+        initial_dir = payload.get("initial_dir")
+        title = payload.get("title") or "选择目录"
+        if not initial_dir:
+            from config import Config
+            base = Config.get_main_dir() or Path.home()
+            initial_dir = str(base)
+
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes('-topmost', True)
+        except Exception:
+            pass
+        selected_path = filedialog.askdirectory(title=title, initialdir=initial_dir)
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        if not selected_path:
+            return JSONResponse({"ok": True, "path": None, "cancelled": True})
+        return JSONResponse({"ok": True, "path": selected_path})
+    except Exception as e:
+        logger.error(f"选择目录失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.get("/api/system/known-folders")
+def api_system_known_folders():
+    try:
+        import os
+        from pathlib import Path
+        base = Path(os.path.expanduser("~"))
+        items = []
+        def add(name, p):
+            if p and Path(p).exists():
+                items.append({"name": name, "path": str(p)})
+        add("桌面", base / "Desktop")
+        add("下载", base / "Downloads")
+        add("文档", base / "Documents")
+        add("图片", base / "Pictures")
+        add("音乐", base / "Music")
+        add("视频", base / "Videos")
+        add("用户目录", base)
+        try:
+            from config import Config
+            if Config.MINECRAFT_DIR:
+                add("Minecraft", Config.MINECRAFT_DIR)
+        except Exception:
+            pass
+        return JSONResponse({"ok": True, "items": items})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.get("/api/system/drives")
+def api_system_drives():
+    try:
+        import psutil
+        drives = []
+        for p in psutil.disk_partitions(all=False):
+            mp = p.mountpoint
+            if mp and isinstance(mp, str):
+                if mp.endswith("\\") or mp.endswith(":/") or mp.endswith(":\\"):
+                    drives.append({"name": mp, "path": mp})
+        # 去重并排序
+        seen = set()
+        result = []
+        for d in drives:
+            key = d["path"].lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(d)
+        result.sort(key=lambda x: x["path"]) 
+        return JSONResponse({"ok": True, "drives": result})
+    except Exception as e:
+        logger.error(f"列出磁盘失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.get("/api/system/list-dir")
+def api_system_list_dir(path: str = ""):
+    try:
+        from pathlib import Path
+        import os
+        if not path:
+            base = Path.home()
+        else:
+            base = Path(path)
+        if not base.exists() or not base.is_dir():
+            return JSONResponse({"ok": False, "error": "目录不存在或不可访问"}, status_code=400)
+        entries = []
+        for name in os.listdir(str(base)):
+            p = base / name
+            try:
+                if p.is_dir():
+                    entries.append({"name": name, "path": str(p)})
+            except Exception:
+                pass
+        entries.sort(key=lambda x: x["name"].lower())
+        return JSONResponse({"ok": True, "current_path": str(base), "entries": entries})
+    except Exception as e:
+        logger.error(f"列出目录失败: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
 @app.get("/api/minecraft/versions")
 def api_mc_list_versions(version_type: str = None):
     """列出所有可用的 Minecraft 版本"""
@@ -2419,6 +2525,27 @@ def start_gui():
 
     # 自定义关闭按钮
     def close_window():
+        try:
+            logger.info("正在停止 Easytier 服务...")
+            if '_easytier' in globals():
+                if _easytier:
+                    _easytier.stop()
+        except Exception as e:
+            logger.error(f"停止 Easytier 失败: {e}")
+
+        try:
+            logger.info("正在停止 Syncthing 服务...")
+            if '_syncthing' in globals():
+                if _syncthing:
+                    _syncthing.stop()
+        except Exception as e:
+            logger.error(f"停止 Syncthing 失败: {e}")
+
+        try:
+            ProcessHelper.kill_by_port(Config.WEB_PORT)
+        except Exception:
+            pass
+
         root.destroy()
         sys.exit(0)
         
@@ -2447,6 +2574,12 @@ def start_gui():
     
     close_btn.bind("<Enter>", on_close_enter)
     close_btn.bind("<Leave>", on_close_leave)
+
+    # 绑定系统窗口关闭事件
+    try:
+        root.protocol("WM_DELETE_WINDOW", close_window)
+    except Exception:
+        pass
 
     min_btn = tk.Button(
         title_bar,

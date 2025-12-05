@@ -185,7 +185,7 @@ class ConfigManager:
             return False
     
     def enable_default_auto_accept(self):
-        """启用默认的自动接受文件夹（GUI配置）"""
+        """启用默认的自动接受文件夹（GUI配置），并设置默认路径"""
         try:
             config = self.get_config()
             if not config:
@@ -193,13 +193,44 @@ class ConfigManager:
             
             defaults = config.get('defaults', {})
             device_defaults = defaults.get('device', {})
+            folder_defaults = defaults.get('folder', {})
             
+            # 1. 启用自动接受
+            needs_update = False
             if not device_defaults.get('autoAcceptFolders', False):
                 device_defaults['autoAcceptFolders'] = True
+                needs_update = True
+            
+            # 2. 设置默认文件夹路径 (defaultFolderPath)
+            # 确保自动接受的文件夹有地方放
+            from config import Config
+            if Config.is_configured():
+                # 默认路径设置为 FlowerGame/.minecraft/saves/sync
+                # 或者 FlowerGame/sync (根据需求调整)
+                # 这里我们设置为 FlowerGame 主目录下的 sync 文件夹，防止污染游戏根目录
+                sync_root = Config.MAIN_DIR / "sync"
+                if not sync_root.exists():
+                    sync_root.mkdir(parents=True, exist_ok=True)
+                
+                options = config.get('options', {})
+                current_path = options.get('defaultFolderPath')
+                
+                # 统一路径分隔符进行比较
+                target_path = str(sync_root).replace("\\", "/")
+                if current_path:
+                    current_path = current_path.replace("\\", "/")
+                
+                if current_path != target_path:
+                    options['defaultFolderPath'] = str(sync_root)
+                    config['options'] = options
+                    needs_update = True
+                    logger.info(f"设置默认同步路径: {sync_root}")
+            
+            if needs_update:
                 defaults['device'] = device_defaults
                 config['defaults'] = defaults
                 
-                logger.info("✅ 已启用新设备的默认自动接受共享文件夹")
+                logger.info("✅ 已启用默认自动接受并配置默认路径")
                 return self.set_config(config, async_mode=False)
             
             return True
